@@ -50,7 +50,7 @@ Six stages, each writing its own artifact so a degraded stage stays visible:
 python3 tests/test_xray.py
 ```
 
-57 checks, no pytest required. Brace matching against strings, comments and
+64 checks, no pytest required. Brace matching against strings, comments and
 template interpolations; function-vs-keyword detection; cross-scope string-array
 resolution; the syntax-validity gate; an end-to-end run over
 `fixtures/sample_obfuscated.js` (javascript-obfuscator output: base64-encoded,

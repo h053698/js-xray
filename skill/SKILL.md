@@ -73,6 +73,9 @@ Everything needed is under `porting`:
 - `algorithms[]` - the recognised family, its constants, the line range, and
   `multiply_style` with a `multiply_note` explaining how to reproduce it.
 - `network_contracts[]` - url, method, headers, body shape, credentials mode.
+  A hoisted endpoint constant is followed back to its literal, so `url` is the
+  address; when that required a lookup the original call-site expression is
+  kept in `url_expression`.
 - `inputs[]` - the environment properties that feed the algorithm. A port has to
   supply these; they are inputs, not constants.
 - `pitfalls[]` - the specific ways this file breaks a naive port.
@@ -117,7 +120,8 @@ literals         {urls[]{url, line}, paths[]}
 porting          {algorithms[], network_contracts[], inputs[], pitfalls[]}
   algorithms[]   {function, id, lines[2], families[], constants[], operators[],
                   returns[], loops, multiply_style, multiply_note}
-  network_...[]  {kind, url, method, headers[], body, credentials, function, line}
+  network_...[]  {kind, url, url_expression?, method, headers[], body,
+                  credentials, function, id, line}
   inputs[]       {property, read_by[]}
   pitfalls[]     {issue, detail}
 deobfuscation    {strings_inlined, unresolved, arrays, decoders, rolled_back}

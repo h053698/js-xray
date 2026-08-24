@@ -38,6 +38,20 @@ const TRACKED_ROOTS = new Set([
   "AbortController", "setTimeout", "setInterval", "requestAnimationFrame",
 ]);
 
+// Aliases for the global object. A path like window.localStorage.getItem names
+// the same thing as localStorage.getItem, so the prefix is stripped before
+// anything is matched against it.
+// How far to follow a name back to the value it holds. Endpoints sit one or
+// two hops away; more than that and the chain is usually runtime-dependent.
+const MAX_RESOLVE_HOPS = 4;
+
+const GLOBAL_ALIAS = new Set(["window", "globalThis", "self", "top", "parent"]);
+
+// Places a module can keep state across page loads. Recorded separately from
+// plain globals because persistence changes what a reimplementation must do:
+// the value read here was written by an earlier run, not computed.
+const STORAGE_PATH = /^(localStorage|sessionStorage|indexedDB|caches)\b|^document\.cookie$/;
+
 // Constants that identify a well-known algorithm. Presence of the constant is
 // strong evidence; the label names what to compare a port against.
 const ALGO_CONSTANTS = [
@@ -317,7 +331,7 @@ export function extractStructure(code) {
 
       // network operations, with enough detail to replicate the request
       if (target === "fetch" || (target && target.endsWith(".fetch"))) {
-        owner.network.push(describeFetch(path.node));
+        owner.network.push(describeFetch(path.node, path));
       } else if (target && /\.(open|send)$/.test(target)) {
         owner.network.push({ kind: "xhr", detail: preview(path.node, 120) });
       }
@@ -353,11 +367,19 @@ export function extractStructure(code) {
         return;
       }
       if (!TRACKED_ROOTS.has(root)) return;
+      // window.localStorage and localStorage are the same surface, and code
+      // written for both browser and worker contexts mixes them freely. Drop the
+      // global-object prefix so downstream matching sees one spelling.
+      let norm = p;
+      if (GLOBAL_ALIAS.has(root)) {
+        const rest = p.slice(root.length + 1);
+        if (rest && TRACKED_ROOTS.has(rest.split(".")[0])) norm = rest;
+      }
       // only record the meaningful prefix, e.g. navigator.userAgent
-      const parts = p.split(".");
+      const parts = norm.split(".");
       push(owner.globals, parts.slice(0, 3).join("."), 50);
-      if (/^(localStorage|sessionStorage|indexedDB)/.test(p) || p === "document.cookie") {
-        push(owner.storage, p, 20);
+      if (STORAGE_PATH.test(norm)) {
+        push(owner.storage, norm, 20);
       }
     },
 
@@ -435,13 +457,71 @@ export function extractStructure(code) {
   });
 
 
+  // ---- follow a name back to the string it was assigned once ----
+  // Only single-assignment bindings are followed. If a variable is written more
+  // than once its value at the call site is a runtime question, and guessing one
+  // of the writes would be worse than reporting the expression as-is.
+  function resolveStringish(scopePath, node, hops) {
+    const depth = hops || 0;
+    if (!node || depth > MAX_RESOLVE_HOPS) return null;
+
+    if (node.type === "StringLiteral") return node.value;
+
+    if (node.type === "TemplateLiteral") {
+      const out = [];
+      const quasis = node.quasis || [];
+      for (let i = 0; i < quasis.length; i++) {
+        out.push(quasis[i].value.cooked != null ? quasis[i].value.cooked : quasis[i].value.raw);
+        const ex = (node.expressions || [])[i];
+        if (ex) {
+          const sub = resolveStringish(scopePath, ex, depth + 1);
+          out.push(sub != null ? sub : INTERP_MARK);
+        }
+      }
+      return out.join("");
+    }
+
+    if (node.type === "BinaryExpression" && node.operator === "+") {
+      const l = resolveStringish(scopePath, node.left, depth + 1);
+      const r = resolveStringish(scopePath, node.right, depth + 1);
+      if (l == null && r == null) return null;
+      // A half-resolved endpoint is still worth showing: "https://host" + path
+      // tells a reader the host even when the suffix is computed.
+      return (l != null ? l : INTERP_MARK) + (r != null ? r : INTERP_MARK);
+    }
+
+    if (node.type !== "Identifier" || !scopePath || !scopePath.scope) return null;
+    const binding = scopePath.scope.getBinding(node.name);
+    if (!binding || !binding.constant) return null;
+    const decl = binding.path;
+    if (!decl) return null;
+    if (decl.node.type === "VariableDeclarator" && decl.node.init) {
+      return resolveStringish(decl, decl.node.init, depth + 1);
+    }
+    return null;
+  }
+
   // ---- fetch call detail: URL, method, headers, body shape ----
-  function describeFetch(node) {
+  function describeFetch(node, scopePath) {
     const out = { kind: "fetch", url: null, method: null, headers: [], body: null, credentials: null };
     const args = node.arguments || [];
     if (args[0]) {
       if (args[0].type === "StringLiteral") out.url = args[0].value;
-      else out.url = preview(args[0], 120);
+      else {
+        out.url = preview(args[0], 120);
+        // Endpoints are usually hoisted into a module constant, so the call site
+        // holds only a name. A reader wants the address, so follow single-
+        // assignment bindings back to the literal and keep the name alongside it.
+        const resolved = resolveStringish(scopePath, args[0]);
+        // A partial resolution is only an improvement when it recovered an actual
+        // address. "${...}req" says less than the expression Zt + "req" it came
+        // from, so in that case the expression stays as the answer.
+        const informative = resolved && (!resolved.includes(INTERP_MARK) || HAS_URL.test(resolved));
+        if (informative && resolved !== out.url) {
+          out.url_expression = out.url;
+          out.url = resolved;
+        }
+      }
     }
     const opts = args[1];
     if (opts && opts.type === "ObjectExpression") {

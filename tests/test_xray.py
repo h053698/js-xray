@@ -355,6 +355,69 @@ def test_multiply_style():
     shutil.rmtree(outdir, ignore_errors=True)
 
 
+def test_endpoint_and_storage_recovery():
+    """Two facts a reader asks for first: where it calls, and what it remembers.
+
+    An endpoint is almost always hoisted into a module constant, so the fetch call
+    site holds a name; and storage is reached as often through window.localStorage
+    as through the bare global. Both used to be reported in the unhelpful form: an
+    identifier instead of an address, and a persistence read filed as a browser
+    property the module fingerprints.
+    """
+    src = "\n".join([
+        'const ENDPOINT = "https://collect.example.test/v2/events";',
+        'const KEY = "app.session";',
+        "function load() {",
+        "  try { return JSON.parse(window.localStorage.getItem(KEY)); }",
+        "  catch (e) { return null; }",
+        "}",
+        "function save(v) { window.localStorage.setItem(KEY, JSON.stringify(v)); }",
+        "async function send(payload) {",
+        "  return await fetch(ENDPOINT, {",
+        '    method: "POST", credentials: "omit",',
+        '    headers: { "Content-Type": "application/json" },',
+        "    body: JSON.stringify(payload)",
+        "  });",
+        "}",
+        "load(); save({}); send({});",
+    ])
+    work = tempfile.mkdtemp(prefix="jx_ep_")
+    try:
+        path = os.path.join(work, "mod.js")
+        open(path, "w").write(src)
+        out = os.path.join(work, "structure.json")
+        node, _ver = node_env.resolve()
+        subprocess.run([node, os.path.join(SCRIPTS, "structure.mjs"), path, out],
+                       check=True, capture_output=True)
+        st = json.load(open(out))
+
+        nets = [n for fn in st["functions"] for n in fn.get("network", [])]
+        check("one fetch found", len(nets) == 1, nets)
+        check("endpoint resolved through the constant",
+              nets[0]["url"] == "https://collect.example.test/v2/events", nets[0]["url"])
+        check("call-site expression kept", nets[0].get("url_expression") == "ENDPOINT",
+              nets[0].get("url_expression"))
+
+        by_name = {fn.get("name"): fn for fn in st["functions"]}
+        check("window-prefixed storage recorded",
+              any(s.startswith("localStorage") for s in by_name["load"]["storage"]),
+              by_name["load"]["storage"])
+
+        exp = explain.explain(st)
+        roles = {f["name"]: [r["role"] for r in f["roles"]] for f in exp["functions"]}
+        check("storage reader is persistence, not fingerprinting",
+              "persistence" in roles.get("load", []),
+              roles.get("load"))
+        props = [i["property"] for i in exp["porting"]["inputs"]]
+        check("storage is not listed as a fingerprint input",
+              not any("localStorage" in p for p in props), props)
+        check("endpoint in the summary",
+              "https://collect.example.test/v2/events" in exp["summary"]["endpoints"],
+              exp["summary"]["endpoints"])
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
 def test_reachability_ignores_flow_budget():
     """Code only the bundle wrapper can reach must not be reported as dead.
 
@@ -415,6 +478,7 @@ def main():
     test_custom_anchors()
     test_graceful_on_plain_file()
     test_multiply_style()
+    test_endpoint_and_storage_recovery()
     test_reachability_ignores_flow_budget()
     print("")
     print("passed %d, failed %d" % (len(PASS), len(FAIL)))
