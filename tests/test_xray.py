@@ -162,10 +162,119 @@ def test_graceful_on_plain_file():
     check("report written", os.path.isfile(os.path.join(outdir, "report.md")))
 
 
+def test_scoped_string_arrays():
+    """The second pass must resolve per-scope arrays without cross-contamination."""
+    print("scoped string arrays")
+    fixture = os.path.join(ROOT, "fixtures", "multi_scope_arrays.js")
+    if not os.path.isfile(fixture):
+        check("multi-scope fixture present", False, fixture)
+        return
+
+    outdir = tempfile.mkdtemp(prefix="jsxray_scope_")
+    out = os.path.join(outdir, "out.js")
+    meta_path = os.path.join(outdir, "meta.json")
+    proc = subprocess.run(
+        [sys.executable, os.path.join(SCRIPTS, "inline_strings.py"), fixture, out, "--meta", meta_path],
+        capture_output=True, text=True)
+    check("inline exit 0", proc.returncode == 0, proc.stderr[-400:])
+    if not os.path.isfile(meta_path):
+        check("inline meta written", False)
+        return
+
+    meta = json.load(open(meta_path))
+    if not meta.get("ok"):
+        # no compatible Node: the pass degrades instead of corrupting the file
+        check("degrades without node", open(out).read() == open(fixture).read(),
+              meta.get("error", "?"))
+        return
+
+    code = open(out).read()
+    check("output still parses", meta.get("valid") is True, meta.get("parse_error"))
+    check("not rolled back", meta.get("rolled_back") is False)
+
+    # scope A and scope B both alias `i`, to different arrays
+    check("scope A alias resolved", "s.substring(0, 2)" in code)
+    check("scope B alias resolved", 'fetch("https://example.invalid/api")' in code)
+    # Cross-scope contamination check. Both scopes alias `i`, so a textual pass
+    # resolves one of them against the wrong array. Assert on the resolved call
+    # sites directly -- a text window would also span the array declarations.
+    def strip_comments(text):
+        # fixture comments name the expected values, so compare code only
+        return "\n".join(ln for ln in text.splitlines() if not ln.strip().startswith("//"))
+
+    body_a = strip_comments(code.split("globalThis.scopeA", 1)[1].split("})();", 1)[0])
+    body_b = strip_comments(code.split("globalThis.scopeB", 1)[1].split("})();", 1)[0])
+    check("scope A kept its own array", "example.invalid" not in body_a, body_a.strip())
+    check("scope B kept its own array", "alpha" not in body_b, body_b.strip())
+
+    # offset form  arr[idx -= 5]
+    check("offset decoder resolved", "s.charCodeAt(0)" in code)
+
+    # computed class keys must become valid syntax, not `async .run()`
+    check("class method key", "initialize()" in code)
+    check("async class method key", "async run()" in code)
+    code_lines = [ln for ln in code.splitlines() if not ln.strip().startswith("//")]
+    check("no async-dot syntax error", not any("async ." in ln for ln in code_lines))
+    check("static class method key", "static teardown()" in code)
+
+    # a decoder wrapping atob does more than an index lookup; leave it alone
+    check("impure decoder untouched", "DEC_E(0)" in code)
+
+    check("no decoder calls left", "DEC_A(" not in code.split("globalThis.scopeA", 1)[-1])
+
+
+def test_inline_syntax_gate():
+    """A rewrite that would not parse must roll back to the input."""
+    print("inline syntax gate")
+    outdir = tempfile.mkdtemp(prefix="jsxray_gate_")
+    js = os.path.join(outdir, "broken.js")
+    # deliberately unparseable input: the transform must fail closed
+    open(js, "w").write("function ( { this is not javascript\n")
+    out = os.path.join(outdir, "out.js")
+    meta_path = os.path.join(outdir, "meta.json")
+    proc = subprocess.run(
+        [sys.executable, os.path.join(SCRIPTS, "inline_strings.py"), js, out, "--meta", meta_path],
+        capture_output=True, text=True)
+    check("gate exit 0", proc.returncode == 0, proc.stderr[-300:])
+    check("input preserved", os.path.isfile(out) and open(out).read() == open(js).read())
+
+
+def test_anonymous_block_qualified():
+    """Anonymous helpers get qualified by their nearest named ancestor."""
+    print("qualified block names")
+    src = ("class K {\n"
+           "  _runCheck = (t) => {\n"
+           "    const s = function (x) {\n"
+           "      let e = 2166136261;\n"
+           "      return e;\n"
+           "    };\n"
+           "    return s(t);\n"
+           "  };\n"
+           "}\n")
+    nl = analyze.line_index(src)
+    fn = analyze.enclosing_function(src, src.index("2166136261"), nl)
+    check("anonymous helper found", fn is not None)
+    if fn:
+        check("qualified with named ancestor", fn.get("qualname") == "_runCheck > (anonymous)",
+              "got %s" % fn.get("qualname"))
+
+
+def test_class_field_arrow_named():
+    print("class field arrow")
+    src = "class K {\n  _runCheck = (t, n) => {\n    return t.charCodeAt(n);\n  };\n}\n"
+    nl = analyze.line_index(src)
+    fn = analyze.enclosing_function(src, src.index("charCodeAt"), nl)
+    check("class field arrow named", fn and fn["name"] == "_runCheck", "got %s" % (fn or {}).get("name"))
+
+
 def main():
     test_brace_matching()
     test_keyword_not_function()
+    test_class_field_arrow_named()
+    test_anonymous_block_qualified()
     test_line_numbers()
+    test_scoped_string_arrays()
+    test_inline_syntax_gate()
     test_pipeline_end_to_end()
     test_custom_anchors()
     test_graceful_on_plain_file()

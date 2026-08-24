@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
-"""js-xray orchestrator: deobfuscate -> analyze -> report.
+"""js-xray orchestrator: deobfuscate -> inline -> analyze -> report.
 
 Usage:
     python3 scripts/xray.py <input.js> [-o OUTDIR] [--anchors anchors.json]
 """
 import argparse
+import json
 import os
+import shutil
 import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.realpath(__file__))
+sys.path.insert(0, HERE)
 
 
 def step(label, cmd):
@@ -35,6 +38,7 @@ def main():
     ap.add_argument("-o", "--outdir", help="output directory (default: xray_<name>/ next to input)")
     ap.add_argument("--anchors", help="custom anchors json")
     ap.add_argument("--skip-deobfuscate", action="store_true", help="analyze the input as-is")
+    ap.add_argument("--skip-inline", action="store_true", help="skip the second-pass string inlining")
     ap.add_argument("--mangle", action="store_true", help="pass --mangle to webcrack")
     ap.add_argument("--max-blocks", type=int, default=12)
     args = ap.parse_args()
@@ -48,35 +52,61 @@ def main():
     outdir = os.path.abspath(args.outdir) if args.outdir else os.path.join(os.path.dirname(inp), "xray_" + stem)
     os.makedirs(outdir, exist_ok=True)
 
+    pass1 = os.path.join(outdir, "webcrack.js")
     clean = os.path.join(outdir, "clean.js")
     meta = os.path.join(outdir, "webcrack.json")
     log = os.path.join(outdir, "webcrack.log")
+    inline_meta = os.path.join(outdir, "inline.json")
     analysis = os.path.join(outdir, "analysis.json")
     report_md = os.path.join(outdir, "report.md")
 
+    total = 3 if args.skip_inline else 4
+    n = 0
+
+    n += 1
     if args.skip_deobfuscate:
-        sys.stderr.write("[js-xray] 1/3 deobfuscate: skipped\n")
+        sys.stderr.write("[js-xray] %d/%d deobfuscate: skipped\n" % (n, total))
         with open(inp, encoding="utf-8", errors="replace") as fh:
-            open(clean, "w").write(fh.read())
+            open(pass1, "w").write(fh.read())
         meta_arg = []
     else:
-        cmd = [sys.executable, os.path.join(HERE, "run_webcrack.py"), inp, clean, "--meta", meta, "--log", log]
+        cmd = [sys.executable, os.path.join(HERE, "run_webcrack.py"), inp, pass1, "--meta", meta, "--log", log]
         if args.mangle:
             cmd.append("--mangle")
-        if not step("1/3 deobfuscate (webcrack)", cmd):
+        if not step("%d/%d deobfuscate (webcrack)" % (n, total), cmd):
             return 1
         meta_arg = ["--meta", meta]
 
+    # Second pass: resolve per-scope string arrays webcrack left behind. Rolls
+    # itself back to the first-pass output if the rewrite would not parse.
+    inline_arg = []
+    if args.skip_inline:
+        shutil.copyfile(pass1, clean)
+    else:
+        n += 1
+        cmd = [sys.executable, os.path.join(HERE, "inline_strings.py"), pass1, clean, "--meta", inline_meta]
+        if not step("%d/%d inline residual strings" % (n, total), cmd):
+            return 1
+        if os.path.isfile(inline_meta):
+            inline_arg = ["--inline-meta", inline_meta]
+            try:
+                import inline_strings
+                sys.stderr.write("  " + inline_strings.summarize(json.load(open(inline_meta))) + "\n")
+            except Exception:
+                pass
+
+    n += 1
     cmd = [sys.executable, os.path.join(HERE, "analyze.py"), clean, analysis,
            "--max-blocks", str(args.max_blocks)]
     if args.anchors:
         cmd += ["--anchors", os.path.abspath(args.anchors)]
-    if not step("2/3 analyze", cmd):
+    if not step("%d/%d analyze" % (n, total), cmd):
         return 1
 
+    n += 1
     cmd = [sys.executable, os.path.join(HERE, "report.py"), analysis, report_md,
-           "--source", inp, "--clean", clean] + meta_arg
-    if not step("3/3 report", cmd):
+           "--source", inp, "--clean", clean] + meta_arg + inline_arg
+    if not step("%d/%d report" % (n, total), cmd):
         return 1
 
     sys.stderr.write("[js-xray] done\n")

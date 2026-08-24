@@ -112,10 +112,13 @@ def main():
     ap.add_argument("--meta", help="webcrack meta json")
     ap.add_argument("--source", help="original input path for display")
     ap.add_argument("--clean", help="deobfuscated js path for display")
+    ap.add_argument("--inline-meta", help="second-pass inlining meta json")
     args = ap.parse_args()
 
     data = json.load(open(args.analysis))
     meta = json.load(open(args.meta)) if args.meta and os.path.isfile(args.meta) else {}
+    inline = (json.load(open(args.inline_meta))
+              if args.inline_meta and os.path.isfile(args.inline_meta) else {})
 
     out = []
     add = out.append
@@ -143,12 +146,26 @@ def main():
         add("| node used | %s |" % meta.get("node_version", "?"))
     elif meta:
         add("| deobfuscation | FAILED - %s |" % meta.get("error", "unknown"))
+    if inline.get("replaced"):
+        add("| second-pass strings inlined | %s (across %s scoped arrays) |"
+            % (fmt_int(inline.get("replaced", 0)), inline.get("arrays", 0)))
+    if inline.get("rolled_back"):
+        add("| second pass | rolled back - %s |"
+            % (inline.get("error") or inline.get("parse_error") or "invalid output"))
     add("| analyzed source | %s lines, %s bytes |" % (fmt_int(data.get("lines", 0)),
                                                       fmt_int(data.get("bytes", 0))))
     add("| anchors matched | %d |" % len(data.get("anchor_hits", {})))
     add("| key blocks | %d |" % len(data.get("key_blocks", [])))
     add("")
 
+    if inline.get("replaced"):
+        dec = inline.get("decoders") or []
+        add("This file declared a string array per scope, so a second AST pass resolved "
+            "%d call%s against %d decoder%s that webcrack left in place. Identifier "
+            "names below are the real ones."
+            % (inline.get("replaced", 0), "" if inline.get("replaced") == 1 else "s",
+               len(dec), "" if len(dec) == 1 else "s"))
+        add("")
     if meta and not meta.get("ok"):
         add("> Deobfuscation did not run, so identifiers below are still obfuscated.")
         add("> Fix: install a compatible Node (%s) then %s." % (code("fnm install 24"), code("bun install")))

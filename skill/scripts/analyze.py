@@ -68,6 +68,8 @@ FN_PATTERNS = [
     re.compile(r"(?:async\s+)?function\s*\*?\s*([A-Za-z_$][\w$]*)?\s*\(", re.M),
     re.compile(r"(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:function|\([^)]*\)\s*=>)", re.M),
     re.compile(r"^\s*(?:async\s+|static\s+|get\s+|set\s+)*([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*\{", re.M),
+    # class field holding a function: `_runCheck = (t, n) => {` / `run = async function () {`
+    re.compile(r"^\s*(?:static\s+)?([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?(?:function|\([^)]*\)\s*=>|[A-Za-z_$][\w$]*\s*=>)", re.M),
 ]
 
 
@@ -151,7 +153,32 @@ def enclosing_function(src, pos, nl_offsets):
         best["start_line"] = offset_to_line(nl_offsets, best["start"])
         best["end_line"] = offset_to_line(nl_offsets, best["end"])
         best["code"] = src[best["start"]:best["end"]]
+        best["qualname"] = best["name"]
+        # Hot logic often lives in an anonymous helper inside a named method
+        # (e.g. the hash closure inside _runCheck). A bare "(anonymous)" is
+        # useless in a report, so qualify it with the nearest named ancestor.
+        if best["name"] == "(anonymous)":
+            outer = enclosing_named(src, best["start"], nl_offsets)
+            if outer:
+                best["qualname"] = outer + " > (anonymous)"
     return best
+
+
+def enclosing_named(src, pos, nl_offsets, depth=4):
+    """Nearest named function enclosing pos, skipping anonymous wrappers."""
+    at = pos
+    for _ in range(depth):
+        if at <= 0:
+            return None
+        fn = enclosing_function(src, at - 1, nl_offsets)
+        if not fn:
+            return None
+        if fn["name"] != "(anonymous)":
+            return fn["name"]
+        if fn["start"] >= at:
+            return None
+        at = fn["start"]
+    return None
 
 
 def load_anchors(path):
@@ -210,7 +237,7 @@ def main():
         if not fn:
             continue
         entry = blocks.setdefault((fn["start"], fn["end"]), {
-            "name": fn["name"],
+            "name": fn.get("qualname") or fn["name"],
             "start_line": fn["start_line"],
             "end_line": fn["end_line"],
             "bytes": fn["size"],

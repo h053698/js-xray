@@ -10,7 +10,13 @@ Check `webcrack.json` first:
 - `"deobfuscated": false` means no string array was found. Either the file was only minified (fine - analysis still works), or it uses a scheme WebCrack does not recognise.
 - An `error` field means WebCrack did not run at all. Fix Node before drawing conclusions, because identifiers are still encoded.
 
-A useful sanity check: grep `clean.js` for a readable domain word. If you see plaintext method names, inlining succeeded.
+Then check `inline.json` for the second pass:
+
+- `replaced` > 0 means the file declared string arrays per scope and they were resolved on the AST. `decoders` lists each one with its array size and offset.
+- `rolled_back: true` means the rewrite would not have parsed, so `clean.js` is the WebCrack output only. Residual `X(42)`-style calls are expected; resolve the ones you care about by hand, using the holder function that is in scope at the call site.
+- `replaced: 0` with arrays found means the decoders were impure (base64, RC4) and deliberately skipped.
+
+A useful sanity check: grep `clean.js` for a readable domain word. If you see plaintext method names, inlining succeeded. Then grep for leftover decoder calls - a short name followed by a bare integer, like `i(47)`. None left means the file is fully resolved.
 
 ## 2. Read the key blocks in order
 
@@ -23,6 +29,15 @@ The report ranks functions by distinct anchor count. The top block is almost alw
 ## 3. Common obfuscation shapes
 
 **String array + decoder.** A big array of strings plus a lookup function, often base64-encoded and rotated at load time. WebCrack handles this; it is what `inline-decoded-strings` reports.
+
+**One string array per scope.** The same scheme, but repeated inside each IIFE, each with its own holder and decoder. WebCrack picks one and leaves the rest, which is what the second pass exists for. The tell is a report that shows a successful deobfuscation while key functions are still named `(anonymous)`.
+
+When resolving these by hand, note that the decoder is usually plaintext by this point and can be read directly:
+
+    function U() { const t = ["_getAnswer", ...]; return (U = function () { return t; })(); }
+    function O(t, n) { const e = U(); return (O = function (t, n) { return e[t -= 0]; })(t, n); }
+
+So `O(n)` is `U()[n - offset]`. Watch the offset, and watch which array is in scope - short alias names get reused across scopes for different arrays, so the same `i(4)` means different things in different functions.
 
 **Control-flow flattening.** Logic hidden behind a `switch` inside a `while` loop with a state variable. WebCrack's `control-flow-switch` pass undoes common cases. If the code still looks like a state machine, trace the state variable by hand.
 
