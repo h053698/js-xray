@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""Render a readable Markdown report from analyze.py output."""
+"""Render the explanation JSON as Markdown for a human reader.
+
+This is a view, not an analysis: everything here comes from xray.json. The order
+is deliberate -- what the module does, then the flows, then the porting details --
+because a reader needs the shape of the thing before the constants mean anything.
+
+Confidence is printed next to every inferred role. An inference that reads like a
+fact is worse than no inference, since it is the one a reader will not check.
+"""
 import argparse
 import json
 import os
@@ -7,254 +15,337 @@ import os
 FENCE = chr(96) * 3
 BT = chr(96)
 
-# anchor label -> (what it means, how to port it to Python)
-PORT_HINTS = {
-    "fnv_offset_basis": (
-        "FNV-1a 32-bit offset basis (2166136261).",
-        "h = 2166136261\nfor ch in data:\n    h ^= ord(ch)\n    h = (h * 16777619) & 0xFFFFFFFF",
-    ),
-    "fnv_prime": (
-        "FNV-1a 32-bit prime (16777619).",
-        "h = (h * 16777619) & 0xFFFFFFFF  # JS: (h * 16777619) >>> 0",
-    ),
-    "md5_const": ("MD5 initial state constant.", "import hashlib\nhashlib.md5(data).hexdigest()"),
-    "sha256_const": ("SHA-256 initial state constant.", "import hashlib\nhashlib.sha256(data).hexdigest()"),
-    "crc32_poly": ("CRC32 reversed polynomial.", "import zlib\nzlib.crc32(data) & 0xFFFFFFFF"),
-    "unsigned_shift": (
-        "JS coerces to uint32 with the >>> 0 idiom.",
-        "value & 0xFFFFFFFF  # every JS >>> 0 becomes a 32-bit mask",
-    ),
-    "xor_assign": ("In-place XOR, typical of hash mixing loops.", "h ^= ord(ch)"),
-    "charcode_loop": (
-        "Per-character loop over the input string.",
-        "for ch in text:\n    code = ord(ch)  # JS: text.charCodeAt(i)",
-    ),
-    "base64_alphabet": (
-        "Custom or standard base64 alphabet.",
-        "import base64\nbase64.b64encode(raw).decode()\n# custom alphabet: raw.translate(str.maketrans(STD, CUSTOM))",
-    ),
-    "btoa_atob": (
-        "btoa/atob base64 helpers.",
-        "import base64\nbase64.b64encode(s.encode('latin-1')).decode()  # btoa\nbase64.b64decode(s).decode('latin-1')          # atob",
-    ),
-    "crypto_subtle": (
-        "WebCrypto digest or CSPRNG.",
-        "import hashlib, secrets\nhashlib.sha256(data).digest()\nsecrets.token_bytes(16)  # getRandomValues",
-    ),
-    "fetch_call": (
-        "Outbound HTTP request; replicate method, headers and body exactly.",
-        "import requests\nresp = requests.post(url, headers=headers, json=body, timeout=30)",
-    ),
-    "json_stringify": (
-        "JSON body construction. Key order and separators affect any hash over it.",
-        "import json\njson.dumps(body, separators=(',', ':'))  # match JS JSON.stringify exactly",
-    ),
-    "json_parse": ("Response parsing.", "data = resp.json()"),
-    "timing_probe": (
-        "Timing/clock values folded into the payload.",
-        "import time\nint(time.time() * 1000)     # Date.now()\ntime.perf_counter() * 1000  # performance.now()",
-    ),
-    "navigator_probe": (
-        "Browser fingerprint fields; must be spoofed consistently.",
-        'ua = "Mozilla/5.0 (...) Chrome/... Safari/537.36"  # keep stable per identity',
-    ),
-    "screen_probe": (
-        "Screen metrics in the fingerprint.",
-        'screen = {"width": 1920, "height": 1080, "colorDepth": 24}',
-    ),
-    "canvas_fp": (
-        "Canvas/audio fingerprint; usually must be replayed from a real browser.",
-        "# capture once from a real browser and reuse the value",
-    ),
-    "webgl_fp": (
-        "WebGL renderer strings.",
-        'webgl = {"vendor": "Google Inc. (Apple)", "renderer": "ANGLE (Apple, Apple M1, ...)"}',
-    ),
-    "token_prefix": (
-        "Versioned token prefix; the suffix is normally base64 of a JSON array.",
-        "import base64, json\ntoken = prefix + base64.b64encode(json.dumps(payload).encode()).decode()",
-    ),
-    "storage_access": (
-        "Persisted identity between runs.",
-        "# persist the same value across requests in your own store",
-    ),
-    "cookie_access": ("Reads/writes cookies.", "session = requests.Session()  # keeps the cookie jar"),
-    "auth_header": ("Authorization header.", 'headers["authorization"] = "Bearer " + access_token'),
-    "eval_like": (
-        "Dynamic code execution: possible anti-analysis or dynamic dispatch.",
-        "# resolve statically; do not execute untrusted code",
-    ),
-    "debugger_trap": ("Anti-debugging trap.", "# ignore for a static port"),
-}
+# Algorithm family -> a Python snippet that reproduces it correctly. Keyed by the
+# family names structure.mjs emits, so a new constant only needs a new entry here.
+# Porting snippets keyed by (algorithm family, multiply style). JavaScript has two
+# different 32-bit multiplies and they produce different digests, so one snippet
+# per family would be wrong half the time:
+#   Math.imul(a, b)  -> exact 32-bit product
+#   a * b >>> 0      -> float64 product, then truncated; low bits already lost
+INT32_HELPER = (
+    "def to_int32(h):\n"
+    "    h &= 0xFFFFFFFF\n"
+    "    return h - 0x100000000 if h >= 0x80000000 else h"
+)
 
-CATEGORY_NOTES = {
-    "hashing/crypto": "Deterministic transforms. Port these first; they are testable against known inputs.",
-    "network": "Defines the request contract: URL, method, headers, body shape.",
-    "fingerprinting": "Environment values collected from the browser. Must stay consistent per identity.",
-    "anti-analysis": "Defensive code. Usually skippable for a static port, but confirm it is not load-bearing.",
-    "storage/identity": "State that persists across requests.",
-    "serialization": "Payload encoding. Byte-exact formatting matters when the result is hashed or signed.",
+PORT_SNIPPETS = {
+    ("FNV-1a 32-bit", "imul"): (
+        "h = 2166136261\n"
+        "for ch in data:\n"
+        "    h ^= ord(ch)\n"
+        "    h = (h * 16777619) & 0xFFFFFFFF"
+    ),
+    # JS: h = h * 16777619 >>> 0. The xor leaves a signed int32, and the float64
+    # product of that with the prime overflows 2**53, so the rounding is part of
+    # the algorithm. Verified against Node: masking an exact product diverges.
+    ("FNV-1a 32-bit", "truncated-float"): (
+        INT32_HELPER + "\n\n"
+        "h = 2166136261\n"
+        "for ch in data:\n"
+        "    h = (h ^ ord(ch)) & 0xFFFFFFFF\n"
+        "    h = int(float(to_int32(h)) * 16777619) & 0xFFFFFFFF"
+    ),
+    ("murmur3 fmix32", "imul"): (
+        "def fmix32(h):\n"
+        "    h ^= h >> 16\n"
+        "    h = (h * 2246822507) & 0xFFFFFFFF\n"
+        "    h ^= h >> 13\n"
+        "    h = (h * 3266489909) & 0xFFFFFFFF\n"
+        "    h ^= h >> 16\n"
+        "    return h"
+    ),
+    ("murmur3 fmix32", "truncated-float"): (
+        INT32_HELPER + "\n\n"
+        "def fmix32(h):\n"
+        "    h = (h ^ (h >> 16)) & 0xFFFFFFFF\n"
+        "    h = int(float(to_int32(h)) * 2246822507) & 0xFFFFFFFF\n"
+        "    h = (h ^ (h >> 13)) & 0xFFFFFFFF\n"
+        "    h = int(float(to_int32(h)) * 3266489909) & 0xFFFFFFFF\n"
+        "    return (h ^ (h >> 16)) & 0xFFFFFFFF"
+    ),
+    ("MD5", None): "import hashlib\nhashlib.md5(data).hexdigest()",
+    ("SHA-256", None): "import hashlib\nhashlib.sha256(data).hexdigest()",
+    ("CRC-32", None): "import zlib\nzlib.crc32(data) & 0xFFFFFFFF",
+    ("djb2", None): "h = 5381\nfor ch in data:\n    h = ((h * 33) + ord(ch)) & 0xFFFFFFFF",
+    ("LCG", None): "state = (state * 1664525 + 1013904223) & 0xFFFFFFFF",
 }
 
 
-def fmt_int(n):
-    return "{:,}".format(n)
+def port_snippet(family, style):
+    """Snippet for a family, matched to how the source multiplies.
+
+    Returns None when the style is unknown or mixed rather than guessing: a wrong
+    snippet is worse than none, because it looks authoritative and fails only on
+    longer inputs.
+    """
+    if (family, None) in PORT_SNIPPETS:
+        return PORT_SNIPPETS[(family, None)]
+    if style in ("imul", "truncated-float"):
+        return PORT_SNIPPETS.get((family, style))
+    return None
 
 
-def code(s):
-    return BT + str(s) + BT
+CONF_MARK = {"high": "high", "medium": "medium", "low": "low", "none": "unknown"}
+
+
+def code(text, lang=""):
+    return FENCE + lang + "\n" + text.rstrip("\n") + "\n" + FENCE
+
+
+def rel(path, base):
+    if not path:
+        return "-"
+    try:
+        return os.path.relpath(path, base)
+    except ValueError:
+        return path
+
+
+def render_roles(roles):
+    """One line per role, with its confidence and the facts behind it."""
+    out = []
+    for r in roles:
+        if r["role"] == "unclassified":
+            continue
+        tag = CONF_MARK.get(r["confidence"], r["confidence"])
+        line = "- **%s** (%s)" % (r["role"], tag)
+        if r.get("inherited_from"):
+            line += " - inherited from " + BT + r["inherited_from"] + BT
+        out.append(line)
+        for ev in r.get("evidence", [])[:4]:
+            out.append("  - " + ev)
+    return out
+
+
+def render(data, args):
+    base = os.path.dirname(os.path.abspath(args.output))
+    s = data.get("summary", {})
+    L = []
+
+    L.append("# js-xray report")
+    L.append("")
+    L.append("| | |")
+    L.append("|---|---|")
+    L.append("| source | " + BT + rel(args.source, base) + BT + " |")
+    L.append("| deobfuscated | " + BT + rel(args.clean, base) + BT + " |")
+    L.append("| size | %s lines, %s bytes |" % (
+        data.get("size", {}).get("lines"), data.get("size", {}).get("bytes")))
+    L.append("| functions | %s |" % s.get("functions"))
+    L.append("| classes | %s |" % s.get("classes"))
+    L.append("| entry points | %s |" % s.get("entry_points"))
+    d = data.get("deobfuscation") or {}
+    if d:
+        L.append("| strings inlined | %s resolved, %s unresolved |" % (
+            d.get("strings_inlined", 0), d.get("unresolved", 0)))
+    L.append("")
+
+    if data.get("error"):
+        L.append("> Structure extraction degraded: %s" % data["error"])
+        L.append("")
+
+    # ---- what the module does ----
+    L.append("## What this module does")
+    L.append("")
+    roles = s.get("roles") or {}
+    named = [(k, v) for k, v in roles.items() if k != "unclassified"]
+    if named:
+        L.append("Roles found across %d functions:" % s.get("functions", 0))
+        L.append("")
+        for role, count in named:
+            L.append("- %s - %d function(s)" % (role, count))
+        unclassified = roles.get("unclassified", 0)
+        if unclassified:
+            L.append("- %d function(s) had no distinguishing facts, typically "
+                     "obfuscation scaffolding and small helpers" % unclassified)
+    else:
+        L.append("No roles could be inferred from the AST facts.")
+    L.append("")
+
+    endpoints = s.get("endpoints") or []
+    if endpoints:
+        L.append("Endpoints referenced:")
+        L.append("")
+        for u in endpoints:
+            L.append("- " + BT + str(u) + BT)
+        L.append("")
+
+    # ---- flows ----
+    L.append("## Flows")
+    L.append("")
+    if not data.get("flows"):
+        L.append("No entry point could be identified, so no flow was traced.")
+        L.append("")
+    for flow in data.get("flows", []):
+        entry = flow["entry"]
+        L.append("### " + entry["name"])
+        L.append("")
+        L.append("Entry at line %s - %s." % (entry.get("line"), entry.get("why")))
+        L.append("")
+        shared = flow.get("also_entered_by") or []
+        if shared:
+            L.append("The same path is entered by " + ", ".join(
+                BT + o["name"] + BT + " (L%s)" % o.get("line") for o in shared) + ".")
+            L.append("")
+        for step in flow.get("steps", []):
+            indent = "  " * step["depth"]
+            bits = []
+            if step.get("does"):
+                bits.append(", ".join(step["does"]))
+            if step.get("algorithms"):
+                bits.append("algorithms: " + ", ".join(step["algorithms"]))
+            if step.get("network"):
+                for net in step["network"]:
+                    bits.append("%s %s %s" % (net.get("kind", ""),
+                                              net.get("method", ""),
+                                              net.get("url", "")))
+            suffix = (" - " + "; ".join(bits)) if bits else ""
+            L.append("%s- " % indent + BT + step["name"] + BT +
+                     " (L%s)%s" % (step.get("line"), suffix))
+        L.append("")
+
+    # ---- functions ----
+    L.append("## Key functions")
+    L.append("")
+    for fn in data.get("functions", [])[:args.max_functions]:
+        header = "### " + fn["name"]
+        if not fn.get("reachable_from_entry"):
+            header += " (not reached from any entry point)"
+        L.append(header)
+        L.append("")
+        sig = "%s%s(%s)" % ("async " if fn.get("async") else "",
+                            fn.get("raw_name") or fn.get("kind"),
+                            ", ".join(fn.get("params", [])))
+        L.append("Lines %s-%s, " % tuple(fn["lines"]) + BT + sig + BT)
+        L.append("")
+        rl = render_roles(fn.get("roles", []))
+        if rl:
+            L.extend(rl)
+            L.append("")
+        if fn.get("reads"):
+            L.append("Reads: " + ", ".join(BT + r + BT for r in fn["reads"][:10]))
+            L.append("")
+        if fn.get("calls"):
+            L.append("Calls: " + ", ".join(BT + c + BT for c in fn["calls"][:10]))
+            L.append("")
+
+    # ---- porting ----
+    porting = data.get("porting", {}) or {}
+    L.append("## Reimplementation notes")
+    L.append("")
+
+    if porting.get("algorithms"):
+        L.append("### Algorithms")
+        L.append("")
+        for algo in porting["algorithms"]:
+            L.append("**%s** at lines %s-%s: %s" % (
+                algo["function"], algo["lines"][0], algo["lines"][1],
+                ", ".join(algo["families"])))
+            L.append("")
+            if algo.get("multiply_style"):
+                L.append("32-bit multiply style: **%s** - %s" % (
+                    algo["multiply_style"], algo.get("multiply_note") or ""))
+                L.append("")
+            if algo.get("constants"):
+                L.append("Constants: " + ", ".join(str(c) for c in algo["constants"]))
+                L.append("")
+            if algo.get("returns"):
+                L.append("Returns " + BT + algo["returns"][0] + BT)
+                L.append("")
+            for family in algo["families"]:
+                snippet = port_snippet(family, algo.get("multiply_style"))
+                if snippet:
+                    L.append("%s in Python:" % family)
+                    L.append("")
+                    L.append(code(snippet, "python"))
+                    L.append("")
+                elif algo.get("multiply_style") == "mixed":
+                    L.append("No snippet for %s: this function mixes Math.imul and "
+                             "truncated float multiplies, so it has to be read directly."
+                             % family)
+                    L.append("")
+
+    if porting.get("network_contracts"):
+        L.append("### Network contracts")
+        L.append("")
+        for net in porting["network_contracts"]:
+            L.append("- **%s** in " % net.get("kind", "request") + BT + net["function"] + BT +
+                     " (L%s)" % net.get("line"))
+            L.append("  - url: " + BT + str(net.get("url")) + BT)
+            if net.get("method"):
+                L.append("  - method: " + str(net["method"]))
+            if net.get("headers"):
+                L.append("  - headers: " + ", ".join(str(h) for h in net["headers"]))
+            if net.get("body"):
+                L.append("  - body: " + BT + str(net["body"]) + BT)
+            if net.get("credentials"):
+                L.append("  - credentials: " + str(net["credentials"]))
+        L.append("")
+
+    if porting.get("inputs"):
+        L.append("### Input surface")
+        L.append("")
+        L.append("Environment values the module reads. A port has to supply these:")
+        L.append("")
+        for item in porting["inputs"][:30]:
+            L.append("- " + BT + item["property"] + BT + " - read by " +
+                     ", ".join(item["read_by"]))
+        L.append("")
+
+    if porting.get("pitfalls"):
+        L.append("### Pitfalls")
+        L.append("")
+        for p in porting["pitfalls"]:
+            L.append("- **%s** - %s" % (p["issue"], p["detail"]))
+        L.append("")
+
+    # ---- anchors, when the optional pass ran ----
+    if args.analysis and os.path.isfile(args.analysis):
+        try:
+            with open(args.analysis, encoding="utf-8") as fh:
+                analysis = json.load(fh)
+        except Exception:
+            analysis = None
+        if analysis and analysis.get("categories"):
+            L.append("## Keyword anchors")
+            L.append("")
+            L.append("Textual matches from the anchor pass, useful as a cross-check "
+                     "on the AST findings above.")
+            L.append("")
+            for cat, hits in sorted(analysis["categories"].items()):
+                labels = [str(h) for h in hits] if isinstance(hits, list) else [str(hits)]
+                L.append("- **%s**: %s" % (cat, ", ".join(labels)))
+            L.append("")
+
+    # ---- how much to trust this ----
+    L.append("## Reading this report")
+    L.append("")
+    for note in data.get("confidence_notes", []):
+        L.append("- " + note)
+    L.append("")
+    L.append("The machine-readable form of everything above is in " + BT + "xray.json" + BT +
+             ", and the raw AST facts are in " + BT + "structure.json" + BT + ".")
+    L.append("")
+    return "\n".join(L)
 
 
 def main():
-    ap = argparse.ArgumentParser(description="render js-xray markdown report")
-    ap.add_argument("analysis", help="analysis json from analyze.py")
+    ap = argparse.ArgumentParser(description="render the explanation json as markdown")
+    ap.add_argument("explanation", help="xray.json from explain.py")
     ap.add_argument("output", help="report.md path")
+    ap.add_argument("--analysis", help="optional analysis json from the anchor pass")
     ap.add_argument("--meta", help="webcrack meta json")
     ap.add_argument("--source", help="original input path for display")
     ap.add_argument("--clean", help="deobfuscated js path for display")
     ap.add_argument("--inline-meta", help="second-pass inlining meta json")
+    ap.add_argument("--max-functions", type=int, default=15)
     args = ap.parse_args()
 
-    data = json.load(open(args.analysis))
-    meta = json.load(open(args.meta)) if args.meta and os.path.isfile(args.meta) else {}
-    inline = (json.load(open(args.inline_meta))
-              if args.inline_meta and os.path.isfile(args.inline_meta) else {})
-
-    out = []
-    add = out.append
-    name = os.path.basename(args.source or data.get("file", "input.js"))
-    add("# js-xray report: %s" % name)
-    add("")
-
-    cats = data.get("categories", {})
-    add("## Summary")
-    add("")
-    if cats:
-        add("This file shows evidence of: **%s**." % ", ".join(cats))
-    else:
-        add("No known behavioural anchors matched. The file may be plain, packed differently, "
-            "or need custom anchors.")
-    add("")
-    add("| field | value |")
-    add("| --- | --- |")
-    if args.source and os.path.isfile(args.source):
-        add("| input | %s (%s bytes) |" % (code(args.source), fmt_int(os.path.getsize(args.source))))
-    if meta.get("ok"):
-        add("| string array | %s |" % meta.get("string_array", "not detected"))
-        add("| rotated | %s |" % meta.get("rotate", "no"))
-        add("| decoders | %s |" % meta.get("decoders", "none"))
-        add("| node used | %s |" % meta.get("node_version", "?"))
-    elif meta:
-        add("| deobfuscation | FAILED - %s |" % meta.get("error", "unknown"))
-    if inline.get("replaced"):
-        add("| second-pass strings inlined | %s (across %s scoped arrays) |"
-            % (fmt_int(inline.get("replaced", 0)), inline.get("arrays", 0)))
-    if inline.get("rolled_back"):
-        add("| second pass | rolled back - %s |"
-            % (inline.get("error") or inline.get("parse_error") or "invalid output"))
-    add("| analyzed source | %s lines, %s bytes |" % (fmt_int(data.get("lines", 0)),
-                                                      fmt_int(data.get("bytes", 0))))
-    add("| anchors matched | %d |" % len(data.get("anchor_hits", {})))
-    add("| key blocks | %d |" % len(data.get("key_blocks", [])))
-    add("")
-
-    if inline.get("replaced"):
-        dec = inline.get("decoders") or []
-        add("This file declared a string array per scope, so a second AST pass resolved "
-            "%d call%s against %d decoder%s that webcrack left in place. Identifier "
-            "names below are the real ones."
-            % (inline.get("replaced", 0), "" if inline.get("replaced") == 1 else "s",
-               len(dec), "" if len(dec) == 1 else "s"))
-        add("")
-    if meta and not meta.get("ok"):
-        add("> Deobfuscation did not run, so identifiers below are still obfuscated.")
-        add("> Fix: install a compatible Node (%s) then %s." % (code("fnm install 24"), code("bun install")))
-        add("")
-
-    eps = data.get("endpoints", {})
-    if eps.get("urls") or eps.get("paths"):
-        add("## Endpoints")
-        add("")
-        for u in eps.get("urls", []):
-            add("- %s" % code(u))
-        for p in eps.get("paths", []):
-            add("- %s" % code(p))
-        add("")
-
-    if cats:
-        add("## Behaviour breakdown")
-        add("")
-        for cat, labels in cats.items():
-            add("### %s" % cat)
-            add("")
-            note = CATEGORY_NOTES.get(cat)
-            if note:
-                add(note)
-                add("")
-            for lab in labels:
-                info = data["anchor_hits"].get(lab, {})
-                meaning = PORT_HINTS.get(lab, ("", ""))[0]
-                line = "- %s x%d" % (code(lab), info.get("count", 0))
-                if meaning:
-                    line += " - " + meaning
-                add(line)
-            add("")
-
-    blocks = data.get("key_blocks", [])
-    if blocks:
-        add("## Key code blocks")
-        add("")
-        add("Ranked by how many distinct anchors each function contains.")
-        add("")
-        for i, b in enumerate(blocks, 1):
-            add("### %d. %s - lines %d-%d" % (i, code(b["name"] + "()"), b["start_line"], b["end_line"]))
-            add("")
-            add("Signals: %s" % ", ".join(code(l) for l in b["labels"]))
-            add("")
-            add(FENCE + "javascript")
-            add(b["code"])
-            add(FENCE)
-            add("")
-
-    hit_labels = [l for l in data.get("anchor_hits", {}) if l in PORT_HINTS]
-    if hit_labels:
-        add("## Python porting guide")
-        add("")
-        add("Only the anchors actually found in this file are listed.")
-        add("")
-        for lab in hit_labels:
-            meaning, snippet = PORT_HINTS[lab]
-            add("### %s" % lab)
-            add("")
-            add(meaning)
-            add("")
-            add(FENCE + "python")
-            add(snippet)
-            add(FENCE)
-            add("")
-        add("### Porting checklist")
-        add("")
-        add("1. Reproduce the hash on a fixed input and compare against the browser console.")
-        add("2. Match JSON.stringify byte-for-byte (no spaces, insertion-ordered keys) before hashing.")
-        add("3. Mask every JS >>> 0 or | 0 with & 0xFFFFFFFF to emulate uint32 wrapping.")
-        add("4. Keep fingerprint values stable per identity; randomizing per request is a strong signal.")
-        add("5. Copy request headers exactly, including order-sensitive custom headers.")
-        add("")
-
-    add("## Suggested next steps")
-    add("")
-    if args.clean:
-        add("- Read the cleaned source: %s" % code(args.clean))
-    add("- Re-run with custom anchors to chase target-specific identifiers:")
-    add("  %s" % code("python3 scripts/xray.py <input.js> --anchors my_anchors.json"))
-    if not blocks:
-        add("- No key blocks were extracted; the file may be a bundle. "
-            "Try unpacking modules or supplying custom anchors.")
-    add("")
-
-    text = "\n".join(out) + "\n"
-    open(args.output, "w").write(text)
-    print("report -> %s (%s bytes)" % (args.output, fmt_int(len(text))))
+    with open(args.explanation, encoding="utf-8") as fh:
+        data = json.load(fh)
+    text = render(data, args)
+    with open(args.output, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    print(args.output)
     return 0
 
 

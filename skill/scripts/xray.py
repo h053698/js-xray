@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""js-xray orchestrator: deobfuscate -> inline -> analyze -> report.
+"""js-xray orchestrator: deobfuscate -> inline -> structure -> explain -> report.
 
 Usage:
     python3 scripts/xray.py <input.js> [-o OUTDIR] [--anchors anchors.json]
@@ -40,6 +40,10 @@ def main():
     ap.add_argument("--skip-deobfuscate", action="store_true", help="analyze the input as-is")
     ap.add_argument("--skip-inline", action="store_true", help="skip the second-pass string inlining")
     ap.add_argument("--mangle", action="store_true", help="pass --mangle to webcrack")
+    ap.add_argument("--skip-anchors", action="store_true",
+                    help="skip the keyword anchor pass and its markdown report input")
+    ap.add_argument("--top", type=int, default=25,
+                    help="how many functions to detail in xray.json")
     ap.add_argument("--max-blocks", type=int, default=12)
     args = ap.parse_args()
 
@@ -58,9 +62,11 @@ def main():
     log = os.path.join(outdir, "webcrack.log")
     inline_meta = os.path.join(outdir, "inline.json")
     analysis = os.path.join(outdir, "analysis.json")
+    structure_json = os.path.join(outdir, "structure.json")
+    explanation = os.path.join(outdir, "xray.json")
     report_md = os.path.join(outdir, "report.md")
 
-    total = 3 if args.skip_inline else 4
+    total = (5 if args.skip_inline else 6) - (1 if args.skip_anchors else 0)
     n = 0
 
     n += 1
@@ -95,22 +101,39 @@ def main():
             except Exception:
                 pass
 
+    # Structure and explanation are the products an agent consumes. The anchor
+    # pass stays because it is the one place a user can inject domain keywords,
+    # but it is no longer what drives the report.
     n += 1
-    cmd = [sys.executable, os.path.join(HERE, "analyze.py"), clean, analysis,
-           "--max-blocks", str(args.max_blocks)]
-    if args.anchors:
-        cmd += ["--anchors", os.path.abspath(args.anchors)]
-    if not step("%d/%d analyze" % (n, total), cmd):
+    cmd = [sys.executable, os.path.join(HERE, "structure.py"), clean, structure_json]
+    if not step("%d/%d extract structure" % (n, total), cmd):
         return 1
 
     n += 1
-    cmd = [sys.executable, os.path.join(HERE, "report.py"), analysis, report_md,
-           "--source", inp, "--clean", clean] + meta_arg + inline_arg
+    cmd = [sys.executable, os.path.join(HERE, "explain.py"), structure_json, explanation,
+           "--top", str(args.top)] + inline_arg
+    if not step("%d/%d explain" % (n, total), cmd):
+        return 1
+
+    analysis_arg = []
+    if not args.skip_anchors:
+        n += 1
+        cmd = [sys.executable, os.path.join(HERE, "analyze.py"), clean, analysis,
+               "--max-blocks", str(args.max_blocks)]
+        if args.anchors:
+            cmd += ["--anchors", os.path.abspath(args.anchors)]
+        if not step("%d/%d anchor scan" % (n, total), cmd):
+            return 1
+        analysis_arg = ["--analysis", analysis]
+
+    n += 1
+    cmd = [sys.executable, os.path.join(HERE, "report.py"), explanation, report_md,
+           "--source", inp, "--clean", clean] + analysis_arg + meta_arg + inline_arg
     if not step("%d/%d report" % (n, total), cmd):
         return 1
 
     sys.stderr.write("[js-xray] done\n")
-    print(report_md)
+    print(explanation)
     return 0
 
 

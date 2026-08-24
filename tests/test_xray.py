@@ -2,6 +2,7 @@
 """Test suite for js-xray. Run: python3 tests/test_xray.py"""
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -11,6 +12,9 @@ SCRIPTS = os.path.join(ROOT, "skill", "scripts")
 sys.path.insert(0, SCRIPTS)
 
 import analyze  # noqa: E402
+import explain  # noqa: E402
+import node_env  # noqa: E402
+import report  # noqa: E402
 
 BT = chr(96)
 PASS, FAIL = [], []
@@ -128,8 +132,8 @@ def test_pipeline_end_to_end():
     rep_path = os.path.join(outdir, "report.md")
     if os.path.isfile(rep_path):
         rep = open(rep_path).read()
-        check("report has porting guide", "Python porting guide" in rep)
-        check("report has code fence", (BT * 3 + "javascript") in rep)
+        check("report has porting guide", "Reimplementation notes" in rep)
+        check("report has code fence", (BT * 3 + "python") in rep)
         check("report shows FNV hint", "16777619" in rep)
 
 
@@ -267,6 +271,90 @@ def test_class_field_arrow_named():
     check("class field arrow named", fn and fn["name"] == "_runCheck", "got %s" % (fn or {}).get("name"))
 
 
+def test_multiply_style():
+    """A port built from xray.json must match the original JS byte for byte.
+
+    This is the regression that matters most: the guide used to hand out
+    (h * PRIME) & 0xFFFFFFFF for every FNV loop, which is only correct when the
+    source uses Math.imul. For h * PRIME >>> 0 the product is computed in float64
+    on a signed int32 operand, and the digests diverge on longer inputs -- late
+    enough that a short smoke test passes.
+    """
+    print("multiply style detection")
+    node, _ver = node_env.resolve()
+    if not node:
+        check("node available for multiply-style test", False, "no node found")
+        return
+
+    outdir = tempfile.mkdtemp(prefix="jx_mul_")
+    struct_path = os.path.join(outdir, "structure.json")
+
+    # two files, same algorithm, different multiply -- the only difference that
+    # changes the correct port
+    trunc_src = ("function hashTrunc(s) {\n"
+                 "  var h = 2166136261;\n"
+                 "  for (var i = 0; i < s.length; i++) {\n"
+                 "    h ^= s.charCodeAt(i);\n"
+                 "    h = h * 16777619 >>> 0;\n"
+                 "  }\n"
+                 "  return h.toString(16);\n"
+                 "}\n")
+    imul_src = ("function hashImul(s) {\n"
+                "  var h = 2166136261;\n"
+                "  for (var i = 0; i < s.length; i++) {\n"
+                "    h ^= s.charCodeAt(i);\n"
+                "    h = Math.imul(h, 16777619) >>> 0;\n"
+                "  }\n"
+                "  return h.toString(16);\n"
+                "}\n")
+
+    styles = {}
+    for tag, src in (("trunc", trunc_src), ("imul", imul_src)):
+        js = os.path.join(outdir, tag + ".js")
+        open(js, "w").write(src)
+        subprocess.run([node, os.path.join(SCRIPTS, "structure.mjs"), js, struct_path],
+                       capture_output=True)
+        st = json.load(open(struct_path))
+        data = explain.explain(st)
+        algos = data["porting"]["algorithms"]
+        styles[tag] = algos[0].get("multiply_style") if algos else None
+
+    check("truncated float multiply detected", styles["trunc"] == "truncated-float",
+          "got %s" % styles["trunc"])
+    check("imul multiply detected", styles["imul"] == "imul", "got %s" % styles["imul"])
+
+    # the two styles must not hand out the same snippet
+    snip_t = report.port_snippet("FNV-1a 32-bit", "truncated-float")
+    snip_i = report.port_snippet("FNV-1a 32-bit", "imul")
+    check("snippets differ by style", snip_t and snip_i and snip_t != snip_i)
+    check("mixed style gets no snippet", report.port_snippet("FNV-1a 32-bit", "mixed") is None)
+
+    # round trip: run the JS, run the snippet, compare
+    cases = ["", "a", "Mozilla/5.0 (Macintosh) seed-abc 1234.5678", "x" * 300]
+    runner = os.path.join(outdir, "run.mjs")
+    open(runner, "w").write(
+        trunc_src + imul_src +
+        "const cases = " + json.dumps(cases) + ";\n"
+        "console.log(JSON.stringify({trunc: cases.map(hashTrunc), imul: cases.map(hashImul)}));\n")
+    proc = subprocess.run([node, runner], capture_output=True, text=True)
+    ref = json.loads(proc.stdout.strip())
+
+    for tag, snippet in (("trunc", snip_t), ("imul", snip_i)):
+        harness = os.path.join(outdir, "port_" + tag + ".py")
+        body = "\n".join("    " + ln for ln in snippet.splitlines())
+        open(harness, "w").write(
+            "import json, sys\n"
+            "def digest(data):\n" + body + "\n"
+            "    return format(h & 0xFFFFFFFF, 'x')\n"
+            "print(json.dumps([digest(c) for c in " + json.dumps(cases) + "]))\n")
+        out = subprocess.run([sys.executable, harness], capture_output=True, text=True)
+        got = json.loads(out.stdout.strip()) if out.stdout.strip() else None
+        check("port matches JS (%s)" % tag, got == ref[tag],
+              "py %s vs js %s" % (got, ref[tag]))
+
+    shutil.rmtree(outdir, ignore_errors=True)
+
+
 def main():
     test_brace_matching()
     test_keyword_not_function()
@@ -278,6 +366,7 @@ def main():
     test_pipeline_end_to_end()
     test_custom_anchors()
     test_graceful_on_plain_file()
+    test_multiply_style()
     print("")
     print("passed %d, failed %d" % (len(PASS), len(FAIL)))
     for name, detail in FAIL:
