@@ -270,7 +270,9 @@ def find_entry_points(structure, by_id):
 
     The bundle wrapper is excluded on purpose. Almost every minified file is one
     IIFE spanning the whole source, and tracing from it reaches everything at once,
-    which describes nothing. Its useful contents surface as their own entry points.
+    which describes nothing. Its useful contents surface as their own entry
+    points. It is still returned separately, because reachability has to start
+    there too.
     """
     module = structure.get("module", {}) or {}
     total_lines = structure.get("lines") or 0
@@ -288,6 +290,7 @@ def find_entry_points(structure, by_id):
                 and total_lines and span >= total_lines * 0.8)
 
     entries = []
+    wrappers = []
     for fn in structure.get("functions", []) or []:
         name = fn.get("name")
         why = None
@@ -295,7 +298,10 @@ def find_entry_points(structure, by_id):
             why = "named in the module public surface"
         elif fn.get("kind") == "iife" and fn.get("_parent") is None:
             if is_bundle_wrapper(fn):
-                continue  # the bundle wrapper, not a behaviour of its own
+                # Not a behaviour of its own, so it is kept out of the flows, but it
+                # does run on load and code only it can reach is not dead.
+                wrappers.append(fn["id"])
+                continue
             why = "top-level IIFE, runs on load"
         elif (name and not fn.get("called_by") and fn.get("loc_lines", 0) >= 4
               and not fn.get("class")):
@@ -319,7 +325,7 @@ def find_entry_points(structure, by_id):
             continue
         seen.add(e["id"])
         unique.append(e)
-    return unique
+    return unique, wrappers
 
 
 ENTRY_TIER = {
@@ -611,6 +617,31 @@ def porting_spec(structure, by_id, roles_by_id):
     return spec
 
 
+def full_reachability(entries, wrapper_ids, by_id, tables):
+    """Everything the entry points can reach, ignoring the narrative budget.
+
+    trace_flow stops at MAX_FLOW_DEPTH/MAX_FLOW_NODES so a flow stays readable,
+    but that budget must not decide whether a function is dead code. Minified
+    bundles routinely bury the interesting work behind a couple of anonymous
+    closures, which puts it outside every traced flow; calling that dead points a
+    reader away from the part they came for.
+    """
+    seen = set()
+    stack = [e["id"] for e in entries] + list(wrapper_ids)
+    while stack:
+        cur = stack.pop()
+        if cur in seen:
+            continue
+        seen.add(cur)
+        fn = by_id.get(cur)
+        if fn is None:
+            continue
+        for nxt, _via in successors(fn, by_id, tables):
+            if nxt not in seen:
+                stack.append(nxt)
+    return seen
+
+
 def explain(structure, inline_meta=None, top=25):
     by_id = build_index(structure)
     fns = structure.get("functions", []) or []
@@ -619,7 +650,8 @@ def explain(structure, inline_meta=None, top=25):
     roles_by_id = {fn["id"]: classify(fn, by_id) for fn in fns}
     rollup_child_roles(fns, by_id, roles_by_id)
 
-    entries = rank_entry_points(find_entry_points(structure, by_id), by_id, roles_by_id)
+    raw_entries, wrappers = find_entry_points(structure, by_id)
+    entries = rank_entry_points(raw_entries, by_id, roles_by_id)
     flows, reached = [], set()
     # Several public methods often delegate to one internal path, producing flows
     # that differ only in their first step. Emitting each in full triples the
@@ -643,6 +675,10 @@ def explain(structure, inline_meta=None, top=25):
         flows.append(flow)
     for entry in entries[MAX_TRACED_ENTRIES:]:
         entry["traced"] = False
+
+    # Reachability is computed over all entry points without the flow budget,
+    # so "not reached" means no call path exists, not "the narrative ran out".
+    reached |= full_reachability(entries, wrappers, by_id, tables)
 
     # rank functions by how much a reader needs them, not by size alone
     def interest(fn):

@@ -41,7 +41,7 @@ def main():
     ap.add_argument("--skip-inline", action="store_true", help="skip the second-pass string inlining")
     ap.add_argument("--mangle", action="store_true", help="pass --mangle to webcrack")
     ap.add_argument("--skip-anchors", action="store_true",
-                    help="skip the keyword anchor pass and its markdown report input")
+                    help="skip the keyword anchor pass")
     ap.add_argument("--top", type=int, default=25,
                     help="how many functions to detail in xray.json")
     ap.add_argument("--max-blocks", type=int, default=12)

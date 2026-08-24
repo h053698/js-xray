@@ -355,6 +355,54 @@ def test_multiply_style():
     shutil.rmtree(outdir, ignore_errors=True)
 
 
+def test_reachability_ignores_flow_budget():
+    """Code only the bundle wrapper can reach must not be reported as dead.
+
+    Flows are truncated to stay readable, but that budget is a presentation
+    limit. When it also decided reachability, the function performing the only
+    fetch in the Sentinel sample came out as unreachable, which points a reader
+    away from the request the module actually makes.
+    """
+    print("reachability")
+    node, _ver = node_env.resolve()
+    if not node:
+        check("node available for reachability test", False, "no node found")
+        return
+
+    outdir = tempfile.mkdtemp(prefix="jx_reach_")
+    js = os.path.join(outdir, "wrapped.js")
+    struct_path = os.path.join(outdir, "structure.json")
+
+    # the shape that broke: a wrapper IIFE holds a deep anonymous chain, and only
+    # the innermost closure calls the function that does the request
+    open(js, "w").write(
+        "(function () {\n"
+        "  async function send(payload) {\n"
+        "    return fetch('https://example.test/api', {method: 'POST', body: payload});\n"
+        "  }\n"
+        "  setTimeout(function () {\n"
+        "    [1].forEach(function () {\n"
+        "      send('x');\n"
+        "    });\n"
+        "  }, 0);\n"
+        "})();\n")
+    subprocess.run([node, os.path.join(SCRIPTS, "structure.mjs"), js, struct_path],
+                   capture_output=True)
+    st = json.load(open(struct_path))
+    data = explain.explain(st)
+
+    net = [f for f in data["functions"] if f.get("network")]
+    check("network function found", bool(net), "no network function in output")
+    if net:
+        check("network function reachable", net[0]["reachable_from_entry"],
+              "%s marked unreachable" % net[0]["name"])
+    check("wrapper not an entry point",
+          all("L1-" not in e["name"] for e in data["entry_points"]),
+          "entries %s" % [e["name"] for e in data["entry_points"]])
+
+    shutil.rmtree(outdir, ignore_errors=True)
+
+
 def main():
     test_brace_matching()
     test_keyword_not_function()
@@ -367,6 +415,7 @@ def main():
     test_custom_anchors()
     test_graceful_on_plain_file()
     test_multiply_style()
+    test_reachability_ignores_flow_budget()
     print("")
     print("passed %d, failed %d" % (len(PASS), len(FAIL)))
     for name, detail in FAIL:

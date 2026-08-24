@@ -1,6 +1,6 @@
 # Analysis guide
 
-How to turn a js-xray report into working code.
+How to turn js-xray output into an explanation or a working port.
 
 ## 1. Confirm the deobfuscation actually worked
 
@@ -18,14 +18,27 @@ Then check `inline.json` for the second pass:
 
 A useful sanity check: grep `clean.js` for a readable domain word. If you see plaintext method names, inlining succeeded. Then grep for leftover decoder calls - a short name followed by a bare integer, like `i(47)`. None left means the file is fully resolved.
 
-## 2. Read the key blocks in order
+## 2. Read xray.json, not the source
 
-The report ranks functions by distinct anchor count. The top block is almost always the entry point that collects inputs, hashes them, and sends the result. Work outward from it:
+`xray.json` is the deliverable. Start at `summary` for the shape of the file,
+then walk `flows[]` - each is an ordered path from an entry point, with `does`,
+`network` and `algorithms` on each step. That is enough to describe the module
+without opening `clean.js`.
 
-1. What are the function's **inputs**? (parameters, globals, environment probes)
-2. What **transform** is applied? (the hashing/crypto anchors)
-3. What is the **output shape**? (the JSON body or token string)
+For a specific function, look it up in `functions[]` (sorted by `importance`) and
+work outward:
 
+1. **Inputs** - `params`, `reads` (the browser surface it touches)
+2. **Transform** - `algorithms`, and the `roles` with their `evidence`
+3. **Output** - `returns`, `network`
+
+Only open `clean.js` at the cited `lines` when you need to confirm something, or
+when a role's `confidence` is `low`. Roles marked `inherited_from` came from an
+inline closure - that is where obfuscated code usually keeps the real work, so
+the closure is what to read, not the wrapper.
+
+The anchor pass (`analysis.json`) is a keyword grep and independent of all this.
+It is useful for chasing an identifier you already know.
 ## 3. Common obfuscation shapes
 
 **String array + decoder.** A big array of strings plus a lookup function, often base64-encoded and rotated at load time. WebCrack handles this; it is what `inline-decoded-strings` reports.
@@ -47,43 +60,74 @@ So `O(n)` is `U()[n - offset]`. Watch the offset, and watch which array is in sc
 
 ## 4. Porting to Python: the traps
 
-**uint32 wrapping.** JS `(h * PRIME) >>> 0` truncates to 32 bits. Python ints are unbounded, so mask every step:
+`porting.pitfalls[]` lists the ones that apply to your file. The mechanics:
+
+**The 32-bit multiply is two different operations.** This is the trap that costs
+the most time, because both versions look identical after masking. Check
+`multiply_style` on the algorithm entry:
+
+| JS source | `multiply_style` | Python |
+| --- | --- | --- |
+| `Math.imul(h, k)` | `imul` | `(h * k) & 0xFFFFFFFF` |
+| `h * k >>> 0` | `truncated-float` | `int(float(to_int32(h)) * k) & 0xFFFFFFFF` |
+
+`Math.imul` is an exact 32-bit product. `h * k >>> 0` is not: the product is
+computed in float64 and only then truncated. With `h` a signed int32 from the
+preceding `^`, `h * 16777619` passes 2^53, so the low bits are already gone -
+the rounding is part of the algorithm. Both the float step and the sign step
+matter; masking to unsigned first still gives a different digest.
 
 ```python
-h = (h * 16777619) & 0xFFFFFFFF
+def to_int32(h):
+    h &= 0xFFFFFFFF
+    return h - 0x100000000 if h >= 0x80000000 else h
+
+# JS: h = h * 16777619 >>> 0
+h = (h ^ ord(ch)) & 0xFFFFFFFF
+h = int(float(to_int32(h)) * 16777619) & 0xFFFFFFFF
 ```
 
-Forgetting this gives correct-looking output that diverges after a few characters.
+**uint32 wrapping everywhere else.** Python ints are unbounded, so mask after
+every shift and xor too, not just the multiply. Forgetting this gives
+correct-looking output that diverges after a few characters.
 
-**Signed vs unsigned.** JS `|0` produces a *signed* 32-bit int, `>>>0` an unsigned one. To emulate signed:
+**Signed vs unsigned.** JS `|0` produces a *signed* 32-bit int, `>>>0` an
+unsigned one. Use `to_int32` above where the source relies on the signed form.
 
-```python
-v &= 0xFFFFFFFF
-if v >= 0x80000000:
-    v -= 0x100000000
-```
+**charCodeAt is UTF-16.** `ord(ch)` matches for the BMP, but characters above
+U+FFFF are two JS code units. If the input can contain emoji, iterate over
+`s.encode("utf-16-le")` pairs instead.
 
-**charCodeAt is UTF-16.** `ord(ch)` matches for the BMP, but characters above U+FFFF are two JS code units. If the input can contain emoji, iterate over `s.encode("utf-16-le")` pairs instead.
-
-**JSON.stringify formatting.** JS emits no spaces and preserves insertion order. Python's default adds spaces after separators, which changes any hash computed over the string:
+**JSON.stringify formatting.** JS emits no spaces and preserves insertion order.
+Python's default adds spaces after separators, which changes any hash computed
+over the string:
 
 ```python
 json.dumps(body, separators=(",", ":"))
 ```
 
-**Timestamps.** `Date.now()` is integer milliseconds; `performance.now()` is a float relative to page load. Mixing them up shifts the hash input.
-
+**Timestamps.** `Date.now()` is integer milliseconds; `performance.now()` is a
+float relative to page load. Mixing them up shifts the hash input. Check
+`porting.inputs[]` for which one the file reads.
 ## 5. Validating the port
 
-Do not compare end-to-end output first - it usually depends on time and randomness. Instead:
+Do not compare end-to-end output first - it usually depends on time and
+randomness. Instead:
 
 1. Pin every variable input (fixed timestamp, fixed UA, fixed seed).
-2. Run the JS in a browser console or Node with those same fixed inputs.
+2. Extract the algorithm from `clean.js` into a standalone `.mjs` and run it
+   under Node with those same inputs.
 3. Compare the intermediate hash, not the final token.
 4. Only then re-enable real timestamps.
 
-If step 3 matches but the server still rejects the result, the problem is the request contract (headers, cookies, ordering), not the maths.
+Step 2 is not optional. A port that agrees on `"abc"` and disagrees on a real
+user-agent has a 32-bit arithmetic bug, and the only way to see it is to run
+both. `tests/test_xray.py::test_multiply_style` does exactly this round trip for
+the snippets the guide emits.
 
+If step 3 matches but the server still rejects the result, the problem is the
+request contract, not the maths. Compare against `porting.network_contracts[]`:
+header set, `credentials` mode, and the exact body shape.
 ## 6. Fingerprint values
 
 Anything read from `navigator`, `screen`, canvas or WebGL is an environment claim. Two rules:
@@ -94,4 +138,9 @@ Anything read from `navigator`, `screen`, canvas or WebGL is an environment clai
 ## 7. When the report finds nothing
 
 - No anchors matched: try `--anchors` with identifiers you already know, or check whether the file is a loader that fetches the real payload.
-- Key blocks are huge and generic: the file is probably a bundle. Locate the relevant module in `clean.js` and re-run js-xray on just that slice.
+- Every function is `unclassified` and the roles histogram is flat: the file is
+  probably a bundle of unrelated modules. Locate the relevant one in `clean.js`
+  and re-run js-xray on just that slice.
+- `flows[]` is empty: no entry point was identified. Check `module.exports` and
+  `module.global_assignments` in `structure.json` - a pure library with no
+  side effects and no exports has nothing for the tracer to start from.
