@@ -1,0 +1,5 @@
+node_modules/
+xray_*/
+__pycache__/
+*.pyc
+.DS_Store

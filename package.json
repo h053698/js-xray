@@ -1,0 +1,20 @@
+{
+  "name": "js-xray",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Deobfuscation + structural analysis toolkit backing the js-xray Codex skill",
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0 <25"
+  },
+  "scripts": {
+    "webcrack": "webcrack",
+    "xray": "python3 skill/scripts/xray.py"
+  },
+  "dependencies": {
+    "webcrack": "2.16.0"
+  },
+  "devDependencies": {
+    "javascript-obfuscator": "4.1.1"
+  }
+}
