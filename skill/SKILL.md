@@ -114,7 +114,8 @@ functions[]      {id, name, raw_name, kind, lines[2], params[], async,
                   roles[]{role, confidence, evidence[], inherited_from?},
                   calls[], reads[], network[], algorithms[], returns[],
                   reachable_from_entry, importance}
-classes[]        {name, line, methods[], getters[], setters[], fields[], static[]}
+classes[]        {name, superClass, start_line, end_line, methods[], getters[],
+                  setters[], fields[], static[]}
 module           {exports[], imports[], global_assignments[]}
 literals         {urls[]{url, line}, paths[]}
 porting          {algorithms[], network_contracts[], inputs[], pitfalls[]}
@@ -254,6 +255,7 @@ For a walkthrough of common obfuscation shapes and how to validate a port, see
 - **Anonymous functions** appear as `nearestNamedAncestor > <kind@Lstart-Lend>`.
   The line span identifies them exactly.
 - **Dynamic behaviour is invisible**: runtime-computed property access, `eval`,
-  network-fetched code. An `anti-analysis` role is a hint that static reading
-  will be incomplete.
+  network-fetched code. An `anti-analysis` hit in `analysis.json` (the anchor
+  pass, not a role in `xray.json`) is a hint that static reading will be
+  incomplete.
 - **Very large bundles**: extract the relevant module first, or raise `--top`.
