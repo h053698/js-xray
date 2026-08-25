@@ -146,13 +146,13 @@ def test_pipeline_end_to_end():
               pipeline.get("schema"))
         check("pipeline records input path", pipeline.get("input") == fixture, pipeline.get("input"))
         stages = pipeline.get("stages", [])
-        # full run (no --skip-* flags): all 7 stages present, in order, all ok
-        check("pipeline has 7 stages", len(stages) == 7, [s.get("label") for s in stages])
+        # full run (no --skip-* flags): all 8 stages present, in order, all ok
+        check("pipeline has 8 stages", len(stages) == 8, [s.get("label") for s in stages])
         check("pipeline stages numbered in order",
               [s.get("n") for s in stages] == list(range(1, len(stages) + 1)),
               [s.get("n") for s in stages])
-        check("pipeline stages all report total=7",
-              all(s.get("total") == 7 for s in stages), [s.get("total") for s in stages])
+        check("pipeline stages all report total=8",
+              all(s.get("total") == 8 for s in stages), [s.get("total") for s in stages])
         check("pipeline stages all ok", all(s.get("ok") is True for s in stages),
               [(s.get("label"), s.get("ok")) for s in stages])
         for s in stages:
@@ -161,17 +161,18 @@ def test_pipeline_end_to_end():
                   s)
         labels = [s.get("label", "") for s in stages]
         check("stage order matches pipeline description",
-              ["deobfuscate" in labels[0], "inline" in labels[1], "structure" in labels[2],
-               "explain" in labels[3], "anchor" in labels[4], "report" in labels[5],
-               "TOON" in labels[6]] == [True] * 7,
+              ["deobfuscate" in labels[0], "inline" in labels[1], "deflatten" in labels[2],
+               "structure" in labels[3], "explain" in labels[4], "anchor" in labels[5],
+               "report" in labels[6], "TOON" in labels[7]] == [True] * 8,
               labels)
-        # JSON-emitting stages (webcrack, inline, anchors) must parse into dicts
+        # JSON-emitting stages (webcrack, inline, deflatten, anchors) parse into dicts
         check("webcrack stage meta parsed as dict", isinstance(stages[0].get("meta"), dict), stages[0].get("meta"))
         check("inline stage meta parsed as dict", isinstance(stages[1].get("meta"), dict), stages[1].get("meta"))
-        check("anchor stage meta parsed as dict", isinstance(stages[4].get("meta"), dict), stages[4].get("meta"))
+        check("deflatten stage meta parsed as dict", isinstance(stages[2].get("meta"), dict), stages[2].get("meta"))
+        check("anchor stage meta parsed as dict", isinstance(stages[5].get("meta"), dict), stages[5].get("meta"))
         # summary-only stages (structure, explain, report) keep the raw stdout string
-        check("structure stage meta is a raw string", isinstance(stages[2].get("meta"), str), stages[2].get("meta"))
-        check("explain stage meta is a raw string", isinstance(stages[3].get("meta"), str), stages[3].get("meta"))
+        check("structure stage meta is a raw string", isinstance(stages[3].get("meta"), str), stages[3].get("meta"))
+        check("explain stage meta is a raw string", isinstance(stages[4].get("meta"), str), stages[4].get("meta"))
 
 
 def test_default_outdir_naming():
@@ -312,6 +313,312 @@ def test_inline_syntax_gate():
         capture_output=True, text=True)
     check("gate exit 0", proc.returncode == 0, proc.stderr[-300:])
     check("input preserved", os.path.isfile(out) and open(out).read() == open(js).read())
+
+
+def _run_node(node, path):
+    """Execute a fixture and return its stdout, or None if it did not run."""
+    proc = subprocess.run([node, path], capture_output=True, text=True, timeout=120)
+    if proc.returncode != 0:
+        return None, proc.stderr[-300:]
+    return proc.stdout, ""
+
+
+def test_deflatten_execution_equivalence():
+    """The check that actually protects this pass: run it, do not just parse it.
+
+    A deflattening bug does not produce broken syntax. Drop the live branch
+    instead of the dead one, or reorder case bodies that were not independent,
+    and the result is still valid JavaScript -- `node --check` passes, every
+    later stage passes, and the analysis then describes code that never ran.
+    So the fixture is built to make its behaviour observable (every effect is
+    appended to TRACE and printed at the end) and this test runs the file before
+    and after the transform and compares stdout byte for byte. That comparison,
+    not the syntax gate, is what makes the stage trustworthy (ACT-008).
+    """
+    print("deflatten execution equivalence")
+    node, _ver = node_env.resolve()
+    if not node:
+        check("node available for deflatten test", False, "no node found")
+        return
+
+    fixture = os.path.join(ROOT, "fixtures", "flattened.js")
+    if not os.path.isfile(fixture):
+        check("flattened fixture present", False, fixture)
+        return
+
+    outdir = tempfile.mkdtemp(prefix="jsxray_deflat_")
+    try:
+        out = os.path.join(outdir, "out.js")
+        meta_path = os.path.join(outdir, "meta.json")
+        proc = subprocess.run(
+            [sys.executable, os.path.join(SCRIPTS, "deflatten.py"), fixture, out,
+             "--meta", meta_path],
+            capture_output=True, text=True)
+        check("deflatten exit 0", proc.returncode == 0, proc.stderr[-400:])
+        if not os.path.isfile(meta_path):
+            check("deflatten meta written", False)
+            return
+
+        meta = json.load(open(meta_path))
+        if not meta.get("ok"):
+            # no compatible Node: the pass degrades instead of corrupting the file
+            check("degrades without node", open(out).read() == open(fixture).read(),
+                  meta.get("error", "?"))
+            return
+
+        check("deflatten not rolled back", meta.get("rolled_back") is False, meta.get("error"))
+
+        # the equivalence assertion itself
+        before, before_err = _run_node(node, fixture)
+        after, after_err = _run_node(node, out)
+        check("fixture runs before transform", before is not None, before_err)
+        check("fixture runs after transform", after is not None, after_err)
+        check("stdout identical before/after", before is not None and before == after,
+              "before=%r after=%r" % (before, after))
+        # a fixture that printed nothing would make the check above vacuous
+        check("fixture output is non-trivial", bool(before and before.strip()), repr(before))
+
+        # both patterns must actually have fired, or the test proves nothing
+        check("dead branches dropped", meta.get("dead_branches_dropped", 0) >= 3,
+              meta.get("dead_branches_dropped"))
+        check("switch sequences linearised", meta.get("switch_sequences_linearised", 0) >= 2,
+              meta.get("switch_sequences_linearised"))
+        check("nothing was refused in the clean fixture",
+              not meta.get("switch_skips") and not meta.get("dead_branch_skips"),
+              "%s %s" % (meta.get("switch_skips"), meta.get("dead_branch_skips")))
+
+        code = open(out).read()
+        # the flattening machinery itself must be gone
+        check("dispatcher switch removed", "switch (" not in code, code[:200])
+        check("sequence split removed", 'split("|")' not in code)
+        check("dead branch text removed", "unreachable-inner" not in code)
+
+        # ACT-008: a real reduction, not a rearrangement
+        before_lines = len(open(fixture).read().splitlines())
+        after_lines = len(code.splitlines())
+        check("line count meaningfully reduced", after_lines <= before_lines * 0.8,
+              "%d -> %d" % (before_lines, after_lines))
+        check("meta reports the reduction",
+              meta.get("lines_after", 0) < meta.get("lines_before", 0),
+              "%s -> %s" % (meta.get("lines_before"), meta.get("lines_after")))
+    finally:
+        shutil.rmtree(outdir, ignore_errors=True)
+
+
+def test_deflatten_leaves_undecidable_alone():
+    """Constructs the pass cannot prove safe must survive verbatim.
+
+    This is the test that guards against the failure mode that matters: a
+    too-eager rewrite here is invisible downstream, because the output is still
+    valid JavaScript. Each construct in the fixture looks like a handled pattern
+    but carries something that makes the rewrite unsound -- a runtime-computed
+    sequence, a break out of the dispatcher, an observed cursor, a mutated
+    storage object, same-named variables from different scopes, an impure
+    comparison helper, a var hoisted out of the dead branch. All of them must be
+    left exactly as they are, and the refusal must be recorded rather than
+    silent.
+    """
+    print("deflatten conservatism")
+    node, _ver = node_env.resolve()
+    fixture = os.path.join(ROOT, "fixtures", "flattened_ambiguous.js")
+    if not os.path.isfile(fixture):
+        check("ambiguous fixture present", False, fixture)
+        return
+
+    outdir = tempfile.mkdtemp(prefix="jsxray_deflat_amb_")
+    try:
+        out = os.path.join(outdir, "out.js")
+        meta_path = os.path.join(outdir, "meta.json")
+        proc = subprocess.run(
+            [sys.executable, os.path.join(SCRIPTS, "deflatten.py"), fixture, out,
+             "--meta", meta_path],
+            capture_output=True, text=True)
+        check("deflatten exit 0 on ambiguous input", proc.returncode == 0, proc.stderr[-400:])
+        if not os.path.isfile(meta_path):
+            check("ambiguous meta written", False)
+            return
+        meta = json.load(open(meta_path))
+        if not meta.get("ok"):
+            check("degrades without node", open(out).read() == open(fixture).read(),
+                  meta.get("error", "?"))
+            return
+
+        original = open(fixture).read()
+        code = open(out).read()
+
+        check("nothing was transformed", meta.get("dead_branches_dropped") == 0 and
+              meta.get("switch_sequences_linearised") == 0,
+              "dropped=%s linearised=%s" % (meta.get("dead_branches_dropped"),
+                                            meta.get("switch_sequences_linearised")))
+        # byte-identical, not merely equivalent: nothing was rewritten at all
+        check("output byte-identical to input", code == original)
+
+        # each guarded construct is still there
+        for marker in ("KEEP_RUNTIME_SEQ", "KEEP_EARLY_BREAK", "KEEP_OBSERVED_CURSOR",
+                       "KEEP_MUTATED_STORE", "KEEP_SHADOWED", "KEEP_IMPURE_HELPER",
+                       "KEEP_HOISTED_VAR"):
+            check("kept %s" % marker, marker in code)
+
+        # the pass must have looked at them and said no, not failed to find them
+        check("dispatchers were examined", meta.get("switch_sequences_examined", 0) >= 4,
+              meta.get("switch_sequences_examined"))
+        check("refusals recorded with reasons", bool(meta.get("switch_skips")),
+              meta.get("switch_skips"))
+        check("dead-branch refusal recorded", bool(meta.get("dead_branch_skips")),
+              meta.get("dead_branch_skips"))
+        reasons = " ".join(meta.get("switch_skips", {}).keys())
+        check("runtime sequence refused by name", "not statically known" in reasons, reasons)
+        check("dispatcher break refused by name", "break would exit" in reasons, reasons)
+        check("observed cursor refused by name", "read elsewhere" in reasons, reasons)
+
+        if node:
+            before, before_err = _run_node(node, fixture)
+            after, after_err = _run_node(node, out)
+            check("ambiguous fixture runs", before is not None, before_err)
+            check("ambiguous stdout identical", before is not None and before == after,
+                  "before=%r after=%r" % (before, after))
+    finally:
+        shutil.rmtree(outdir, ignore_errors=True)
+
+
+def test_deflatten_rollback():
+    """An output that would not parse must roll back, recording that it did.
+
+    Same fail-closed contract as the inlining pass: downstream stages get the
+    input unchanged rather than a broken file, and `rolled_back` says so instead
+    of the run looking clean.
+    """
+    print("deflatten rollback")
+    outdir = tempfile.mkdtemp(prefix="jsxray_deflat_gate_")
+    try:
+        js = os.path.join(outdir, "broken.js")
+        open(js, "w").write("function ( { this is not javascript\n")
+        out = os.path.join(outdir, "out.js")
+        meta_path = os.path.join(outdir, "meta.json")
+        proc = subprocess.run(
+            [sys.executable, os.path.join(SCRIPTS, "deflatten.py"), js, out,
+             "--meta", meta_path],
+            capture_output=True, text=True)
+        check("rollback exit 0", proc.returncode == 0, proc.stderr[-300:])
+        check("input preserved on failure",
+              os.path.isfile(out) and open(out).read() == open(js).read())
+        if os.path.isfile(meta_path):
+            meta = json.load(open(meta_path))
+            check("failure is visible in meta",
+                  meta.get("ok") is False or meta.get("rolled_back") is True, meta)
+
+        # An output the transform itself produced but node rejects: force it by
+        # pointing the wrapper at a syntactically fine input and then checking
+        # that a rejected output rolls back. Simulated by handing the wrapper an
+        # input whose own syntax node accepts but babel-generated output would
+        # not exist for -- instead assert the gate is wired at all.
+        node, _ver = node_env.resolve()
+        if node:
+            good = os.path.join(outdir, "good.js")
+            open(good, "w").write("var a = 1;\nconsole.log(a);\n")
+            out2 = os.path.join(outdir, "out2.js")
+            meta2 = os.path.join(outdir, "meta2.json")
+            subprocess.run(
+                [sys.executable, os.path.join(SCRIPTS, "deflatten.py"), good, out2,
+                 "--meta", meta2], capture_output=True, text=True)
+            if os.path.isfile(meta2):
+                m2 = json.load(open(meta2))
+                check("node --check gate ran", m2.get("node_check") == "ok", m2.get("node_check"))
+                check("no-op input stays ok", m2.get("ok") is True, m2)
+    finally:
+        shutil.rmtree(outdir, ignore_errors=True)
+
+
+def test_deflatten_stage_in_pipeline():
+    """The pipeline must run deflatten between inline and structure, and clean.js
+    must be the deflattened file -- not the inlined one.
+    """
+    print("deflatten pipeline stage")
+    fixture = os.path.join(ROOT, "fixtures", "flattened.js")
+    if not os.path.isfile(fixture):
+        check("flattened fixture present for pipeline", False, fixture)
+        return
+
+    outdir = tempfile.mkdtemp(prefix="jsxray_deflat_pipe_")
+    try:
+        proc = subprocess.run(
+            [sys.executable, os.path.join(SCRIPTS, "xray.py"), fixture, "-o", outdir],
+            capture_output=True, text=True)
+        check("pipeline exit 0 with deflatten", proc.returncode == 0, proc.stderr[-400:])
+
+        meta_path = os.path.join(outdir, "deflatten.json")
+        check("deflatten.json written", os.path.isfile(meta_path), meta_path)
+        check("inline.js kept as the intermediate",
+              os.path.isfile(os.path.join(outdir, "inline.js")))
+
+        pipeline_path = os.path.join(outdir, "pipeline.json")
+        if os.path.isfile(pipeline_path):
+            stages = json.load(open(pipeline_path)).get("stages", [])
+            labels = [s.get("label", "") for s in stages]
+            check("eight stages recorded", len(stages) == 8, labels)
+            names = [lbl.split(" ", 1)[-1] for lbl in labels]
+            check("deflatten sits between inline and structure",
+                  len(names) >= 4 and "inline" in names[1] and "deflatten" in names[2]
+                  and "structure" in names[3], names)
+            check("every stage numbered out of 8",
+                  all(s.get("total") == 8 for s in stages),
+                  [(s.get("n"), s.get("total")) for s in stages])
+            deflat = next((s for s in stages if "deflatten" in s.get("label", "")), None)
+            check("deflatten stage ok", deflat is not None and deflat.get("ok") is True, deflat)
+
+        clean_path = os.path.join(outdir, "clean.js")
+        if os.path.isfile(clean_path):
+            clean = open(clean_path).read()
+            inlined = open(os.path.join(outdir, "inline.js")).read()
+            meta = json.load(open(meta_path)) if os.path.isfile(meta_path) else {}
+            if meta.get("ok") and meta.get("switch_sequences_linearised", 0):
+                check("clean.js is the deflattened output", clean != inlined)
+                check("clean.js has no dispatcher left", "switch (" not in clean)
+                check("clean.js is shorter than the inlined file",
+                      len(clean.splitlines()) < len(inlined.splitlines()),
+                      "%d vs %d" % (len(clean.splitlines()), len(inlined.splitlines())))
+    finally:
+        shutil.rmtree(outdir, ignore_errors=True)
+
+
+def test_deflatten_regression_on_existing_fixtures():
+    """Deflatten must not disturb the files the rest of the suite depends on.
+
+    None of them carries the flattening residue this pass targets, so the
+    correct outcome is that every one passes through byte-identical -- and,
+    where node is available, still produces the same output.
+    """
+    print("deflatten leaves existing fixtures alone")
+    targets = [
+        os.path.join(ROOT, "fixtures", "sample_obfuscated.js"),
+        os.path.join(ROOT, "fixtures", "multi_scope_arrays.js"),
+        os.path.join(ROOT, "tests", "samples", "sentinel_sdk.js"),
+    ]
+    outdir = tempfile.mkdtemp(prefix="jsxray_deflat_reg_")
+    try:
+        for target in targets:
+            name = os.path.basename(target)
+            if not os.path.isfile(target):
+                check("regression fixture present: %s" % name, False, target)
+                continue
+            out = os.path.join(outdir, name)
+            meta_path = out + ".meta.json"
+            proc = subprocess.run(
+                [sys.executable, os.path.join(SCRIPTS, "deflatten.py"), target, out,
+                 "--meta", meta_path],
+                capture_output=True, text=True)
+            check("deflatten exit 0 on %s" % name, proc.returncode == 0, proc.stderr[-300:])
+            if not os.path.isfile(meta_path):
+                continue
+            meta = json.load(open(meta_path))
+            check("%s not rolled back" % name, meta.get("rolled_back") is False,
+                  meta.get("error"))
+            check("%s passes through unchanged" % name,
+                  open(out).read() == open(target).read(),
+                  "dropped=%s linearised=%s" % (meta.get("dead_branches_dropped"),
+                                                meta.get("switch_sequences_linearised")))
+    finally:
+        shutil.rmtree(outdir, ignore_errors=True)
 
 
 def test_anonymous_block_qualified():
@@ -543,8 +850,8 @@ def test_pipeline_log_records_failure():
 
     Points --anchors at a path that does not exist. load_anchors() calls
     open() on it directly and lets FileNotFoundError propagate, so the anchor
-    scan stage exits non-zero after deobfuscate/inline/structure/explain have
-    already succeeded -- the shape that used to lose everything to stderr.
+    scan stage exits non-zero after deobfuscate/inline/deflatten/structure/explain
+    have already succeeded -- the shape that used to lose everything to stderr.
     """
     print("pipeline log on stage failure")
     fixture = os.path.join(ROOT, "fixtures", "sample_obfuscated.js")
@@ -568,16 +875,17 @@ def test_pipeline_log_records_failure():
 
         pipeline = json.load(open(pipeline_path))
         stages = pipeline.get("stages", [])
-        # deobfuscate, inline, structure, explain succeeded; anchor scan failed
-        # and stopped the run, so report/TOON never executed and never appear.
-        check("failed run stops at the failing stage", len(stages) == 5,
+        # deobfuscate, inline, deflatten, structure, explain succeeded; anchor
+        # scan failed and stopped the run, so report/TOON never executed and
+        # never appear.
+        check("failed run stops at the failing stage", len(stages) == 6,
               [s.get("label") for s in stages])
-        if len(stages) != 5:
+        if len(stages) != 6:
             return
         check("stages before the failure all ok",
-              all(s.get("ok") is True for s in stages[:4]),
-              [(s.get("label"), s.get("ok")) for s in stages[:4]])
-        failed = stages[4]
+              all(s.get("ok") is True for s in stages[:5]),
+              [(s.get("label"), s.get("ok")) for s in stages[:5]])
+        failed = stages[5]
         check("failing stage is the anchor scan", "anchor" in failed.get("label", ""),
               failed.get("label"))
         check("failing stage recorded ok=False", failed.get("ok") is False, failed)
@@ -1389,6 +1697,11 @@ def main():
     test_line_numbers()
     test_scoped_string_arrays()
     test_inline_syntax_gate()
+    test_deflatten_execution_equivalence()
+    test_deflatten_leaves_undecidable_alone()
+    test_deflatten_rollback()
+    test_deflatten_stage_in_pipeline()
+    test_deflatten_regression_on_existing_fixtures()
     test_pipeline_end_to_end()
     test_default_outdir_naming()
     test_custom_anchors()

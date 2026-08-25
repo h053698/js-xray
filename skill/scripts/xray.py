@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""js-xray orchestrator: deobfuscate -> inline -> structure -> explain -> report.
+"""js-xray orchestrator: deobfuscate -> inline -> deflatten -> structure -> explain -> report.
 
 Usage:
     python3 scripts/xray.py <input.js> [-o OUTDIR] [--anchors anchors.json]
@@ -87,6 +87,8 @@ def main():
     ap.add_argument("--anchors", help="custom anchors json")
     ap.add_argument("--skip-deobfuscate", action="store_true", help="analyze the input as-is")
     ap.add_argument("--skip-inline", action="store_true", help="skip the second-pass string inlining")
+    ap.add_argument("--skip-deflatten", action="store_true",
+                    help="skip the control-flow deflattening pass")
     ap.add_argument("--mangle", action="store_true", help="pass --mangle to webcrack")
     ap.add_argument("--skip-anchors", action="store_true",
                     help="skip the keyword anchor pass")
@@ -111,10 +113,12 @@ def main():
         return 1
 
     pass1 = os.path.join(outdir, "webcrack.js")
+    pass2 = os.path.join(outdir, "inline.js")
     clean = os.path.join(outdir, "clean.js")
     meta = os.path.join(outdir, "webcrack.json")
     log = os.path.join(outdir, "webcrack.log")
     inline_meta = os.path.join(outdir, "inline.json")
+    deflatten_meta = os.path.join(outdir, "deflatten.json")
     analysis = os.path.join(outdir, "analysis.json")
     structure_json = os.path.join(outdir, "structure.json")
     explanation = os.path.join(outdir, "xray.json")
@@ -124,7 +128,8 @@ def main():
 
     # TOON encoding always runs -- REQ-002 calls for it to ship on every run,
     # not behind a flag.
-    total = (6 if args.skip_inline else 7) - (1 if args.skip_anchors else 0)
+    total = 6 + (0 if args.skip_inline else 1) + (0 if args.skip_deflatten else 1) \
+        - (1 if args.skip_anchors else 0)
     n = 0
 
     n += 1
@@ -147,12 +152,18 @@ def main():
 
     # Second pass: resolve per-scope string arrays webcrack left behind. Rolls
     # itself back to the first-pass output if the rewrite would not parse.
+    #
+    # This pass writes inline.js rather than clean.js, because the deflatten
+    # stage below consumes its output and clean.js is whatever the last source
+    # rewrite produced. When deflatten is skipped, inline.js is copied to
+    # clean.js so downstream stages always read the same filename.
     inline_arg = []
     if args.skip_inline:
-        shutil.copyfile(pass1, clean)
+        shutil.copyfile(pass1, pass2)
     else:
         n += 1
-        cmd = [sys.executable, os.path.join(HERE, "inline_strings.py"), pass1, clean, "--meta", inline_meta]
+        cmd = [sys.executable, os.path.join(HERE, "inline_strings.py"), pass1, pass2,
+               "--meta", inline_meta]
         label = "%d/%d inline residual strings" % (n, total)
         if not step(label, cmd, n=n, total=total, record=stages):
             return fail(label)
@@ -161,6 +172,29 @@ def main():
             try:
                 import inline_strings
                 sys.stderr.write("  " + inline_strings.summarize(json.load(open(inline_meta))) + "\n")
+            except Exception:
+                pass
+
+    # Third pass: unflatten the control-flow residue that survives webcrack --
+    # always-decidable branches and split-sequence switch dispatchers whose
+    # deciding value reaches them through a control-flow storage object rather
+    # than as a literal. Without this the file is readable but half of it is
+    # unreachable, which is where a reader's tokens go. Like the inline pass it
+    # rolls back to its input rather than hand downstream a broken file, and it
+    # refuses any construct it cannot prove safe rather than guessing (RSK-004).
+    if args.skip_deflatten:
+        shutil.copyfile(pass2, clean)
+    else:
+        n += 1
+        cmd = [sys.executable, os.path.join(HERE, "deflatten.py"), pass2, clean,
+               "--meta", deflatten_meta]
+        label = "%d/%d deflatten control flow" % (n, total)
+        if not step(label, cmd, n=n, total=total, record=stages):
+            return fail(label)
+        if os.path.isfile(deflatten_meta):
+            try:
+                import deflatten
+                sys.stderr.write("  " + deflatten.summarize(json.load(open(deflatten_meta))) + "\n")
             except Exception:
                 pass
 
@@ -219,4 +253,3 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
-

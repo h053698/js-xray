@@ -47,22 +47,30 @@ python3 skill/scripts/xray.py path/to/input.js
 
 Prints the path to `xray.json`. Results land in `<name>.xrayjs/`: `xray.json`,
 `xray.toon`, `toon_stats.json`, `report.md`, `clean.js`, `structure.json`,
-`analysis.json`, `pipeline.json`, `webcrack.js`, `webcrack.json`, `inline.json`,
-`webcrack.log`.
+`analysis.json`, `pipeline.json`, `webcrack.js`, `webcrack.json`, `inline.js`,
+`inline.json`, `deflatten.json`, `webcrack.log`.
 
-Seven stages, each writing its own artifact so a degraded stage stays visible:
+Eight stages, each writing its own artifact so a degraded stage stays visible:
 
 1. **deobfuscate** - WebCrack (`webcrack.js`)
 2. **inline** - second AST pass for string arrays declared per IIFE scope, which
    WebCrack does not handle; verifies its output parses and rolls back if not
-   (`clean.js`, `inline.json`)
-3. **structure** - AST facts only, no interpretation (`structure.json`)
-4. **explain** - entry points, flows, roles with evidence, porting spec
+   (`inline.js`, `inline.json`)
+3. **deflatten** - unflattens the control-flow residue WebCrack leaves when the
+   deciding value reaches a branch or a switch dispatcher through a control-flow
+   storage object instead of as a literal; refuses anything it cannot prove and
+   records why (`clean.js`, `deflatten.json`)
+4. **structure** - AST facts only, no interpretation (`structure.json`)
+5. **explain** - entry points, flows, roles with evidence, porting spec
    (`xray.json`)
-5. **anchors** - keyword grep, optional (`analysis.json`)
-6. **report** - the same findings as prose (`report.md`)
-7. **encode TOON** - `xray.json` re-encoded as TOON for lower token cost, plus a
+6. **anchors** - keyword grep, optional (`analysis.json`)
+7. **report** - the same findings as prose (`report.md`)
+8. **encode TOON** - `xray.json` re-encoded as TOON for lower token cost, plus a
    char/token reduction report; always runs (`xray.toon`, `toon_stats.json`)
+
+`clean.js` is the output of the last source-rewriting stage, so it is the
+deflattened file; `inline.js` is kept as the intermediate, which makes the
+deflattening a diff you can read.
 
 Every run also writes `pipeline.json`: each stage in order with the command that
 ran, whether it succeeded, and the stage's own metadata. A run that dies partway
@@ -104,16 +112,24 @@ It adds no stage and re-derives nothing - every value comes from an artifact, so
 python3 tests/test_xray.py
 ```
 
-262 checks, no pytest required. Brace matching against strings, comments and
+364 checks, no pytest required. Brace matching against strings, comments and
 template interpolations; function-vs-keyword detection; cross-scope string-array
 resolution; the syntax-validity gate; an end-to-end run over
 `fixtures/sample_obfuscated.js` (javascript-obfuscator output: base64-encoded,
 rotated string array).
 
-Three of them close the loop rather than checking a field. `test_multiply_style`
+Four of them close the loop rather than checking a field. `test_multiply_style`
 runs the Python snippet the porting guide emits against the original JS and
 compares digests, for both `Math.imul` and `h * k >>> 0` sources - the two are not
 interchangeable, and the guide used to hand out one snippet for both.
+`test_deflatten_execution_equivalence` runs `fixtures/flattened.js` under node
+before and after the deflattening pass and requires identical stdout. That
+comparison is the whole safety story for that stage: a deflattening bug produces
+valid JavaScript, so `node --check` and every later stage would accept a file
+describing code that never ran. Its counterpart,
+`test_deflatten_leaves_undecidable_alone`, requires
+`fixtures/flattened_ambiguous.js` to come back byte-identical, with each refusal
+recorded by reason.
 `test_reachability_ignores_flow_budget` pins that a function reachable only
 through anonymous closures is not reported as dead code.
 `test_xq_is_a_view_not_an_analysis` runs `xq show --json` over every function in
@@ -144,6 +160,8 @@ skipping quietly.
 | `skill/scripts/run_webcrack.py` | WebCrack wrapper, degrades gracefully |
 | `skill/scripts/inline_strings.py` | second-pass wrapper + `node --check` gate |
 | `skill/scripts/inline_strings.mjs` | Babel transform for per-scope string arrays |
+| `skill/scripts/deflatten.py` | deflatten wrapper + `node --check` gate |
+| `skill/scripts/deflatten.mjs` | Babel transform for control-flow residue: decidable branches, split-sequence switch dispatchers |
 | `skill/scripts/structure.mjs` | AST fact extraction |
 | `skill/scripts/structure.py` | Node resolution + graceful degrade |
 | `skill/scripts/explain.py` | flows, roles, porting spec |
@@ -155,5 +173,5 @@ skipping quietly.
 | `scripts/install-xq.sh` | puts `xq` on the PATH; idempotent, `--dry-run` |
 | `skill/references/` | interpretation guide |
 | `skill/tests/` | TOON encoder suite + the Node reference-decoder shim |
-| `fixtures/` | obfuscated test inputs, incl. a cross-scope alias case |
+| `fixtures/` | obfuscated test inputs, incl. a cross-scope alias case and a pair of control-flow-flattening cases (one flattenable, one deliberately undecidable) |
 | `tests/samples/` | real-world sample used for manual verification |

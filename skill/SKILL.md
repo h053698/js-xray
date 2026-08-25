@@ -1,6 +1,6 @@
 ---
 name: js-xray
-description: Reverse-engineer obfuscated or minified JavaScript into a structured JSON explanation. Deobfuscates with WebCrack, inlines per-scope string arrays, then extracts entry points, call flows, per-function roles with evidence, network contracts and a porting spec into xray.json. Use when given a .js file to understand, explain to a person, or reimplement in another language.
+description: Reverse-engineer obfuscated or minified JavaScript into a structured JSON explanation. Deobfuscates with WebCrack, inlines per-scope string arrays, unflattens residual control flow, then extracts entry points, call flows, per-function roles with evidence, network contracts and a porting spec into xray.json. Use when given a .js file to understand, explain to a person, or reimplement in another language.
 ---
 
 # js-xray
@@ -30,12 +30,47 @@ Prints the path to `xray.json` and writes `<name>.xrayjs/` next to the input:
 | `webcrack.js` | intermediate, before the second inlining pass |
 | `webcrack.json` | what WebCrack detected (string array, rotation, decoders) |
 | `inline.json` | second-pass results: scoped arrays, decoders, replacements |
+| `inline.js` | intermediate, after string inlining and before deflattening |
+| `deflatten.json` | deflattening results: branches dropped, switch sequences linearised, and the reason for every construct deliberately left alone |
 | `xray.toon` | `xray.json`'s content re-encoded as [TOON](https://github.com/toon-format/toon) - read this instead of `xray.json` when re-loading the result into an LLM context and every byte counts |
 | `toon_stats.json` | the measured char/token reduction of `xray.toon` vs `xray.json` for this run - read this to see the actual savings, not an assumed one |
 | `pipeline.json` | run log: what each stage actually did, its command, ok/fail, and its own stdout metadata -- read this after a run to see which stage degraded or failed, instead of scrolling stderr |
 
-Seven stages: **deobfuscate -> inline -> structure -> explain -> anchors -> report -> encode TOON**.
+Eight stages: **deobfuscate -> inline -> deflatten -> structure -> explain -> anchors -> report -> encode TOON**.
 Each writes its own file, so a stage that degrades is visible rather than silent.
+
+### What the deflatten stage does, and what it refuses
+
+WebCrack already unflattens javascript-obfuscator's switch dispatchers and its
+always-true/always-false branches - but only when the deciding value is a literal
+sitting in the expression. The obfuscator usually routes it through a per-function
+control-flow storage object first, and when WebCrack cannot inline that object,
+both of its passes silently stop matching. The result is a `clean.js` with every
+string decoded and a large share of its lines unreachable, which is where a
+reader's tokens go. This stage resolves the deciding value through the storage
+object and finishes the job.
+
+It flattens two things:
+
+- a branch whose test is statically decided, because both operands resolve to the
+  same literal or the same binding - directly, or through a comparison helper
+  whose body is exactly `return a OP b` over its two parameters;
+- a `while (true) { switch (seq[i++]) { ... } break; }` dispatcher driven by a
+  statically known `"3|1|2".split("|")` sequence, whose case bodies are the
+  original statements in shuffled order.
+
+It deliberately leaves alone anything it cannot prove, because a wrong decision
+here is invisible: dropping the live branch instead of the dead one, or
+reordering case bodies that were not independent, still yields valid JavaScript,
+so no syntax check catches it and every later stage would go on to describe code
+that never ran. Refused constructs include a sequence computed at runtime, a
+dispatcher a case body `break`s out of, a cursor or sequence variable read from
+outside the dispatcher, a storage object whose properties are written or read
+under a dynamic key, a comparison helper that does anything besides compare, and
+a dead branch that hoists a `var` read after it. Every refusal is counted by
+reason in `deflatten.json` (`switch_skips`, `dead_branch_skips`), so a
+partially flattened file reads as partial rather than clean. A file with no such
+residue passes through byte-identical.
 
 Once a run exists, `scripts/xq.py` queries these artifacts a question at a time
 instead of re-reading `xray.json` for each one - see
@@ -82,6 +117,7 @@ is not installed (`sh scripts/install-xq.sh`).
 | "What did the pipeline actually do on this run? Did anything fail or degrade?" | `pipeline.json` - each stage's `ok`, `meta`, and `cmd` in order, no source reading required |
 | "Why does `xray.json` look empty/degraded?" | `pipeline.json` for which stage failed, then that stage's raw stdout/stderr; `confidence_notes[]` in `xray.json` for caveats |
 | "Is the string-array deobfuscation trustworthy?" | `webcrack.json` (`"string array"`, `decoders`) and `inline.json` (`unresolved`, `rolled_back`) |
+| "Is any of `clean.js` still flattened, or did anything get removed?" | `deflatten.json` - what was dropped or linearised, and `switch_skips`/`dead_branch_skips` for what was left alone and why; diff `inline.js` against `clean.js` to see the exact change |
 | "Can I trust these findings as the module's real logic at all?" | `xray.json` -> `summary.vm_obfuscation`; anything but `none` means the analysis describes a bytecode interpreter, with the evidence in `vm_signals` |
 | "I need the facts but I'm token-constrained" | `xq` for a specific question; `xray.toon` (+ `toon_stats.json`) when you genuinely need all of it |
 | "What exactly ran, and can I reproduce this stage by hand?" | `pipeline.json` -> that stage's `cmd` list, runnable as-is |
