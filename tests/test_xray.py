@@ -1539,6 +1539,437 @@ def run_xq_in(cwd, *argv):
                           capture_output=True, text=True, cwd=cwd)
 
 
+def _roles_by_name(fixture):
+    """Run structure + classify over a fixture and return {display_name: [roles]}.
+
+    Goes through explain.classify directly rather than the whole pipeline where
+    possible, so a failure points at the classifier instead of at webcrack.
+    """
+    data, err = structure.extract(fixture)
+    if err:
+        return None, err
+    by_id = explain.build_index(data)
+    out = {}
+    for fn in data.get("functions", []) or []:
+        out[explain.display_name(fn, by_id)] = explain.classify(fn, by_id)
+    return out, None
+
+
+def _anti_analysis_names(roles_by_name):
+    return sorted(n for n, rs in roles_by_name.items()
+                  if any(r["role"] == explain.ANTI_ANALYSIS_ROLE for r in rs))
+
+
+def _role_counts(fixture):
+    """Role counts over every function in a fixture.
+
+    Not derived from _roles_by_name: that map is keyed by display name, and
+    obfuscated files reuse names freely, so counting its values undercounts.
+    """
+    return _roles_without_anti_analysis(fixture, include_anti_analysis=True)
+
+
+def _roles_without_anti_analysis(fixture=None, structure_json=None,
+                                 include_anti_analysis=False):
+    """Role counts as if the anti-analysis rule did not exist.
+
+    Used to measure the rule's effect in-process instead of comparing against a
+    number written down from one earlier run. Pass structure_json to score the
+    same facts a pipeline run scored: the counts depend on how much webcrack
+    undid, so a baseline taken from the raw file would not be comparable to a
+    summary.roles taken from clean.js.
+    """
+    if structure_json is not None:
+        with open(structure_json, encoding="utf-8") as fh:
+            data = json.load(fh)
+    else:
+        data, err = structure.extract(fixture)
+        if err:
+            return None
+    by_id = explain.build_index(data)
+    original = explain.anti_analysis_role
+    if not include_anti_analysis:
+        explain.anti_analysis_role = lambda fn: None
+    try:
+        counts = {}
+        for fn in data.get("functions", []) or []:
+            for r in explain.classify(fn, by_id):
+                counts[r["role"]] = counts.get(r["role"], 0) + 1
+    finally:
+        explain.anti_analysis_role = original
+    return counts
+
+
+def test_anti_analysis_positive():
+    """Obfuscator self-defending / debug-protection stubs must be labelled.
+
+    fixtures/anti_analysis_stubs.js is real javascript-obfuscator 4.1.1 output
+    (selfDefending + debugProtection + disableConsoleOutput) whose stub shapes
+    were perturbed so webcrack's exact-AST matchers no longer remove them --
+    which is the case a user hit, where the stubs were plainly in the file. See
+    the fixture header for how it was produced.
+
+    The stubs are labelled rather than deleted: dropping the functions would
+    leave a reader unable to check the call, the same reason vm_signals warns
+    instead of removing an interpreter.
+    """
+    print("anti-analysis: positive")
+    fixture = os.path.join(ROOT, "fixtures", "anti_analysis_stubs.js")
+    if not os.path.isfile(fixture):
+        check("anti-analysis fixture present", False, fixture)
+        return
+
+    roles_by_name, err = _roles_by_name(fixture)
+    if err:
+        check("structure ran for the anti-analysis fixture", False, err)
+        return
+
+    tagged = _anti_analysis_names(roles_by_name)
+    # 4 stubs: the self-defending toString check, the debug-protection source
+    # assertion, the console override, and the recursive debugger trap.
+    check("all four stub shapes tagged", len(tagged) == 4,
+          "got %d: %s" % (len(tagged), tagged))
+
+    evidence_kinds = []
+    for name in tagged:
+        for r in roles_by_name[name]:
+            if r["role"] != explain.ANTI_ANALYSIS_ROLE:
+                continue
+            check("stub %s carries evidence" % name, bool(r["evidence"]), r)
+            check("stub %s has a real confidence" % name,
+                  r["confidence"] in ("high", "medium"), r["confidence"])
+            evidence_kinds.extend(r["evidence"])
+
+    joined = " | ".join(evidence_kinds)
+    # each required-tier signal shows up somewhere, named in the evidence so a
+    # reader can find the construct in the source rather than take the label
+    check("debugger trap cited", "debugger" in joined, joined)
+    check("source self-check cited", "own source text" in joined, joined)
+    check("console override cited", "console methods" in joined, joined)
+
+    # the real logic keeps its own roles: the point is to separate scaffolding
+    # from findings, not to relabel the module
+    def roles_of(name):
+        return {r["role"] for r in roles_by_name.get(name, [])}
+
+    check("hash keeps hash/digest", "hash/digest" in roles_of("computeToken"),
+          roles_of("computeToken"))
+    check("collector keeps fingerprinting",
+          "environment fingerprinting" in roles_of("collectProfile"),
+          roles_of("collectProfile"))
+    check("reporter keeps network transport",
+          "network transport" in roles_of("report"), roles_of("report"))
+    check("persister keeps persistence",
+          "persistence" in roles_of("persist"), roles_of("persist"))
+    # the validator throws, and that finding must survive: the role exists to
+    # stop scaffolding from being read as validation, not the other way round
+    check("real validator keeps validation/error path",
+          "validation/error path" in roles_of("validateProfile"),
+          roles_of("validateProfile"))
+    check("real validator is not called scaffolding",
+          explain.ANTI_ANALYSIS_ROLE not in roles_of("validateProfile"),
+          roles_of("validateProfile"))
+
+
+def test_anti_analysis_no_false_positives():
+    """The gate. A false positive here removes a finding instead of adding one.
+
+    Normal code hooks console, measures time and validates with regexes. Tagging
+    on any one of those would relabel a module's real error handling as
+    obfuscator boilerplate, and a reader told a function is boilerplate stops
+    reading it. So this checks the two files that must stay clean plus the
+    lookalike fixture, where every keyed-on behaviour appears in benign form.
+    """
+    print("anti-analysis: no false positives")
+
+    # sentinel_sdk.js is a real anti-bot SDK. It does contain 9 genuine
+    # javascript-obfuscator self-defending stubs (verbatim
+    # "X.toString().search(...)" checks, verifiable in clean.js), so the
+    # assertion is not "zero tags" -- that would be false. What must hold is
+    # that no function carrying real behaviour is relabelled.
+    sentinel = os.path.join(ROOT, "tests", "samples", "sentinel_sdk.js")
+    if os.path.isfile(sentinel):
+        roles_by_name, err = _roles_by_name(sentinel)
+        if err:
+            check("structure ran for sentinel_sdk", False, err)
+        else:
+            tagged = set(_anti_analysis_names(roles_by_name))
+            # every tag sits on an anonymous callback -- the stub shape -- and
+            # none of them carries a second, behavioural role
+            for name in tagged:
+                others = {r["role"] for r in roles_by_name[name]
+                          if r["role"] not in (explain.ANTI_ANALYSIS_ROLE,
+                                               "unclassified")}
+                check("sentinel tag %s displaces no finding" % name,
+                      not others, others)
+            # Every other role keeps exactly the count it had before this role
+            # existed. Measured against a baseline computed in the same process
+            # rather than a hardcoded number: the absolute counts depend on how
+            # much webcrack managed to undo, and a literal here would encode one
+            # run of that instead of the property being tested, which is that
+            # nothing moved out of a behavioural bucket.
+            counts = _role_counts(sentinel)
+            baseline = _roles_without_anti_analysis(sentinel)
+            if baseline is None:
+                check("baseline classification ran for sentinel_sdk", False, "")
+            else:
+                moved = {role: (baseline.get(role, 0), counts.get(role, 0))
+                         for role in set(baseline) | set(counts)
+                         if role not in (explain.ANTI_ANALYSIS_ROLE,
+                                         "unclassified")
+                         and baseline.get(role, 0) != counts.get(role, 0)}
+                check("no behavioural role changed count on sentinel_sdk",
+                      not moved, moved)
+                # and the functions the label did claim came out of the
+                # unclassified pile, which is the only acceptable source
+                check("tagged sentinel functions were previously unclassified",
+                      counts.get(explain.ANTI_ANALYSIS_ROLE, 0) ==
+                      baseline.get("unclassified", 0) - counts.get("unclassified", 0),
+                      (baseline.get("unclassified"), counts.get("unclassified"),
+                       counts.get(explain.ANTI_ANALYSIS_ROLE)))
+
+    # multi_scope_arrays.js is obfuscated but carries none of these stubs: an
+    # obfuscated file must not be tagged merely for being obfuscated.
+    multi = os.path.join(ROOT, "fixtures", "multi_scope_arrays.js")
+    if os.path.isfile(multi):
+        roles_by_name, err = _roles_by_name(multi)
+        if err:
+            check("structure ran for multi_scope_arrays", False, err)
+        else:
+            tagged = _anti_analysis_names(roles_by_name)
+            check("multi_scope_arrays gets no anti-analysis role",
+                  not tagged, tagged)
+
+    # the lookalike fixture: console hooking, performance.now timing, a
+    # toString()+regex source inspection, a throwing validator and recursion,
+    # each in its legitimate form
+    benign = os.path.join(ROOT, "fixtures", "benign_lookalikes.js")
+    if not os.path.isfile(benign):
+        check("benign lookalike fixture present", False, benign)
+        return
+    roles_by_name, err = _roles_by_name(benign)
+    if err:
+        check("structure ran for benign_lookalikes", False, err)
+        return
+
+    tagged = _anti_analysis_names(roles_by_name)
+    check("benign lookalikes get no anti-analysis role", not tagged, tagged)
+
+    roles_of = lambda n: {r["role"] for r in roles_by_name.get(n, [])}
+    # the finding this role must never eat
+    check("benign validator keeps validation/error path",
+          "validation/error path" in roles_of("validateRecord"),
+          roles_of("validateRecord"))
+
+    # and the individual behaviours, spelled out so a future loosening of the
+    # rule fails here with the reason attached
+    for name, why in (
+        ("installLogger", "hooks console.log/warn/error like a logger"),
+        ("timeOperation", "measures elapsed time with performance.now"),
+        ("describeFunction", "calls toString() and matches it with a regex"),
+        ("retryWithBackoff", "recurses"),
+    ):
+        check("not tagged though it %s: %s" % (why, name),
+              explain.ANTI_ANALYSIS_ROLE not in roles_of(name),
+              roles_of(name))
+
+
+def test_anti_analysis_requires_more_than_one_behaviour():
+    """The required/corroborating split, checked on synthetic facts.
+
+    classify() is fed structure-shaped dicts directly here so each rule can be
+    exercised in isolation: going through a .js fixture for every case would
+    make it unclear which condition fired.
+    """
+    print("anti-analysis: signal combination rules")
+
+    def fn(**kw):
+        base = {"id": "fn0", "name": None, "kind": "function", "calls": [],
+                "globals": [], "strings": [], "numbers": [], "algorithms": [],
+                "operators": [], "returns": [], "throws": [], "params": [],
+                "control": {"loops": 0, "branches": 0, "try_blocks": 0,
+                            "switches": 0},
+                "loc_lines": 5, "start_line": 1, "end_line": 5}
+        base.update(kw)
+        return base
+
+    # corroborating signals alone claim nothing: the global-object preamble
+    # appears in ordinary universal-module wrappers
+    only_global = fn(strings=['return (function() {}.constructor("return this")( ));'])
+    check("global-object preamble alone is not enough",
+          explain.anti_analysis_role(only_global) is None,
+          explain.anti_analysis_role(only_global))
+
+    # self-recursion alone is not enough either
+    only_recursion = fn(name="walk", calls=["walk"])
+    check("self-recursion alone is not enough",
+          explain.anti_analysis_role(only_recursion) is None,
+          explain.anti_analysis_role(only_recursion))
+
+    # a partial console hook is not the disableConsoleOutput sweep
+    small_hook = fn(strings=["log", "warn", "error"])
+    check("hooking three console methods is not enough",
+          explain.anti_analysis_role(small_hook) is None,
+          explain.anti_analysis_role(small_hook))
+
+    # the obfuscator's self-check literal held as *data* is not a check being
+    # run. This is the string-array provider case: it returns its table and
+    # makes no calls, and tagging it took out the Sentinel SDK's own decoders.
+    pattern_as_data = fn(strings=["bind", "apply", "search", "(((.+)+)+)+$"],
+                         returns=["(s = function () { return t; })()"])
+    check("holding the self-check pattern as data is not enough",
+          explain.anti_analysis_role(pattern_as_data) is None,
+          explain.anti_analysis_role(pattern_as_data))
+
+    # the same literal with a call that applies it is the stub
+    pattern_executed = fn(calls=["a.toString"], strings=["(((.+)+)+)+$"],
+                          returns=['a.toString().search("(((.+)+)+)+$")'])
+    role = explain.anti_analysis_role(pattern_executed)
+    check("pattern plus toString/search is tagged", role is not None, role)
+    if role:
+        check("executed self-check reads high", role["confidence"] == "high",
+              role)
+
+    # a bare debugger statement is a required signal, but alone it stays medium:
+    # a hand-written debugger trap is something a reader may still want to see
+    bare_debugger = fn(debugger_statements=1)
+    role = explain.anti_analysis_role(bare_debugger)
+    check("bare debugger statement is tagged", role is not None, role)
+    if role:
+        check("lone required signal stays medium",
+              role["confidence"] == "medium", role)
+
+    # a full console sweep is on its own sufficient but not high
+    full_hook = fn(strings=list(explain.CONSOLE_HOOK_METHODS))
+    role = explain.anti_analysis_role(full_hook)
+    check("full console sweep is tagged", role is not None, role)
+
+    # two required signals together are the full fingerprint
+    trap = fn(name="t", calls=["t"], debugger_statements=1,
+              strings=["debugger", "while (true) {}"])
+    role = explain.anti_analysis_role(trap)
+    check("debugger statement plus trap literals reads high",
+          role is not None and role["confidence"] == "high", role)
+
+
+def test_anti_analysis_role_is_not_inherited():
+    """The label must stay on the function that holds the trap.
+
+    rollup_child_roles lifts a nested closure's role to its parent, which is
+    right for a hash loop in a callback and wrong here: obfuscator stubs are
+    siblings of the real logic, so the nearest enclosing function is usually the
+    bundle wrapper spanning the whole file. Propagating the label there would
+    mark the entire module as scaffolding and tell a reader to skip the code
+    they came for -- worse than not labelling at all.
+    """
+    print("anti-analysis: never inherited upwards")
+    fixture = os.path.join(ROOT, "fixtures", "anti_analysis_stubs.js")
+    if not os.path.isfile(fixture):
+        check("anti-analysis fixture present for rollup test", False, fixture)
+        return
+
+    data, err = structure.extract(fixture)
+    if err:
+        check("structure ran for the rollup test", False, err)
+        return
+
+    fns = data.get("functions", []) or []
+    by_id = explain.build_index(data)
+    roles_by_id = {fn["id"]: explain.classify(fn, by_id) for fn in fns}
+    direct = {fid for fid, rs in roles_by_id.items()
+              if any(r["role"] == explain.ANTI_ANALYSIS_ROLE for r in rs)}
+    explain.rollup_child_roles(fns, by_id, roles_by_id)
+    after = {fid for fid, rs in roles_by_id.items()
+             if any(r["role"] == explain.ANTI_ANALYSIS_ROLE for r in rs)}
+
+    check("rollup adds no anti-analysis holders", direct == after,
+          "gained %s" % sorted(after - direct))
+    for fid, rs in roles_by_id.items():
+        for r in rs:
+            if r["role"] == explain.ANTI_ANALYSIS_ROLE:
+                check("anti-analysis role is a direct observation",
+                      not r.get("inherited_from"), r)
+
+
+def test_anti_analysis_improves_the_histogram():
+    """Measure the effect on summary.roles rather than assert it improved.
+
+    Runs the full pipeline so the numbers are the ones a caller actually sees in
+    xray.json, and prints them so a regression shows the shift instead of only a
+    boolean.
+    """
+    print("anti-analysis: histogram effect")
+    fixture = os.path.join(ROOT, "fixtures", "anti_analysis_stubs.js")
+    if not os.path.isfile(fixture):
+        check("anti-analysis fixture present for histogram test", False, fixture)
+        return
+
+    outdir = tempfile.mkdtemp(prefix="xray-anti-")
+    try:
+        proc = subprocess.run(
+            [sys.executable, os.path.join(SCRIPTS, "xray.py"), fixture,
+             "-o", outdir],
+            capture_output=True, text=True)
+        xray_json = os.path.join(outdir, "xray.json")
+        if proc.returncode != 0 or not os.path.isfile(xray_json):
+            check("pipeline ran on the anti-analysis fixture", False,
+                  proc.stderr[-400:])
+            return
+        summary = json.load(open(xray_json))["summary"]
+        roles = summary.get("roles") or {}
+        print("    roles: %s" % json.dumps(roles, sort_keys=True))
+
+        tagged = roles.get(explain.ANTI_ANALYSIS_ROLE, 0)
+        check("scaffolding is counted separately in summary.roles",
+              tagged == 4, "got %s" % tagged)
+
+        # The fixture holds 6 real functions and the surviving stubs inflate the
+        # file well past that, so the property worth checking is that each
+        # behavioural bucket still counts exactly the one real function that
+        # earns it -- scaffolding is not hiding inside any of them.
+        check("hash/digest still counts one function",
+              roles.get("hash/digest") == 1, roles)
+        check("network transport still counts one function",
+              roles.get("network transport") == 1, roles)
+        # exactly the one real validator. This is the number from the report
+        # that prompted the role: stubs that throw to break out of their own
+        # recursion were being counted here as though they were input validation.
+        check("validation/error path counts only the real validator",
+              roles.get("validation/error path") == 1, roles)
+
+        # The measured shift, so a regression shows the movement rather than a
+        # bare False. Everything the label claimed has to come out of
+        # unclassified and nowhere else.
+        baseline = _roles_without_anti_analysis(
+            structure_json=os.path.join(outdir, "structure.json"))
+        if baseline is not None:
+            print("    baseline: %s" % json.dumps(baseline, sort_keys=True))
+            moved = {role: (baseline.get(role, 0), roles.get(role, 0))
+                     for role in set(baseline) | set(roles)
+                     if role not in (explain.ANTI_ANALYSIS_ROLE, "unclassified")
+                     and baseline.get(role, 0) != roles.get(role, 0)}
+            check("no behavioural role changed count on the fixture",
+                  not moved, moved)
+            check("the label only claimed previously unclassified functions",
+                  tagged == baseline.get("unclassified", 0) - roles.get("unclassified", 0),
+                  (baseline.get("unclassified"), roles.get("unclassified"), tagged))
+
+        # the label has to reach the artifact with its evidence, not just the
+        # histogram, or a reader cannot check it
+        detailed = json.load(open(xray_json))["functions"]
+        with_role = [f for f in detailed
+                     if any(r["role"] == explain.ANTI_ANALYSIS_ROLE
+                            for r in f.get("roles") or [])]
+        check("tagged stubs appear in functions[] with evidence",
+              with_role and all(
+                  r.get("evidence")
+                  for f in with_role for r in f["roles"]
+                  if r["role"] == explain.ANTI_ANALYSIS_ROLE),
+              [f["name"] for f in with_role])
+    finally:
+        shutil.rmtree(outdir, ignore_errors=True)
+
+
 def test_xq_subcommands():
     """Every subcommand has to answer on a real analysis, not just parse its args."""
     print("xq subcommands")
@@ -2359,6 +2790,11 @@ def main():
     test_vm_detection_positive()
     test_vm_detection_no_false_positives()
     test_vm_warning_reaches_outputs()
+    test_anti_analysis_positive()
+    test_anti_analysis_no_false_positives()
+    test_anti_analysis_requires_more_than_one_behaviour()
+    test_anti_analysis_role_is_not_inherited()
+    test_anti_analysis_improves_the_histogram()
     test_xq_subcommands()
     test_xq_is_a_view_not_an_analysis()
     test_xq_token_budget()

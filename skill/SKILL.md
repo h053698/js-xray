@@ -418,6 +418,10 @@ summary          {functions, functions_detailed, functions_omitted, classes,
                  plus vm_obfuscation: "vm-obfuscated" | "suspected" | "none" |
                  "unknown" -- check this first; when it is not "none" the rest of
                  the file describes a bytecode interpreter, not the module
+                 roles may include "anti-analysis scaffolding": obfuscator
+                 debug-protection / self-defending / console-disabling stubs,
+                 counted apart from the module's own roles so the histogram is
+                 not a mix of the two. See "The anti-analysis scaffolding role"
 entry_points[]   {id, name, line, why, traced, shares_flow_with?}
 flows[]          {entry, steps[], also_entered_by[]}
   steps[]        {depth, id, name, line, reached_by, does[], network?, algorithms?}
@@ -475,6 +479,73 @@ for an anonymous child); `raw_name` is the identifier as it appears, or null.
 
 `inherited_from` means the role came from an inline closure inside the function,
 which is where obfuscated code usually keeps the real work.
+
+### The `anti-analysis scaffolding` role
+
+javascript-obfuscator can inject boilerplate whose only job is to make the file
+unpleasant to debug: a `selfDefending` check that matches a function's own
+`toString()` output against a catastrophic-backtracking regex, a
+`debugProtection` trap that recurses while building `debugger` statements
+through `Function`/`constructor`, and a `disableConsoleOutput` sweep that
+overwrites the console methods. This is not the module's logic, and left
+unlabelled it lands in the histogram beside real findings -- on the project's own
+positive fixture the stubs turn a 6-function module into a 29-function one.
+
+webcrack removes these when it recognises them, but its matchers need an exact
+AST shape, so anything that runs afterwards (a bundler, a minifier, a second
+obfuscation pass) leaves them in place. Note that webcrack.json's
+`"self-defending, debug-protection, jsx, jsx-new"` number is a **grouped pass
+counter, not a removal count**: it reads the same whether or not anything was
+removed, so a `0` there is not evidence the stubs are absent, and a non-zero
+value is not evidence they are gone. Read the role instead.
+
+They are **labelled, not deleted**. Removing the functions would leave a reader
+unable to check the call, the same reason a VM verdict warns rather than dropping
+the interpreter.
+
+What earns the label: one of three signals specific to these stubs must be
+present --
+
+- a debugger trap (a bare `debugger` statement, or `"debugger"` / `"while
+  (true) {}"` handed to a function constructor),
+- a source self-check that both **carries** one of the obfuscator's literal
+  regexes and **calls** something able to apply it (`toString`, `search`,
+  `test`, `RegExp`),
+- a console override taking at least 5 of the 7 methods `disableConsoleOutput`
+  emits.
+
+Two of those, or one plus corroboration, reads `high`; a lone signal stays
+`medium`, because a hand-written debugger trap is still something a reader may
+want to see.
+
+What deliberately does **not** earn it, because tagging on any of these would
+remove a finding rather than add one:
+
+- hooking `console.log`/`warn`/`error` — that is a logging wrapper,
+- measuring elapsed time with `performance.now()` or `Date` — that is
+  profiling, and timing is never a required signal,
+- calling `toString()` and matching it with an *ordinary* regex — that is
+  reflection,
+- self-recursion, or the `constructor("return this")` global-object preamble —
+  both only ever corroborate,
+- **holding** one of the obfuscator's regexes as data without calling anything
+  that applies it. This is the string-array provider case: it returns a table of
+  every literal the module uses, and matching on the literal alone tagged the
+  Sentinel sample's own string decoders.
+
+A function with this role keeps any strong capability role it also earns
+(network, hashing, storage), and the label suppresses only the weak fallbacks --
+notably `validation/error path`, which a debug-protection stub would otherwise
+collect for throwing to escape its own recursion. The role is also never
+inherited upwards by `rollup_child_roles`: these stubs sit as siblings of the
+real logic, so the enclosing function is usually the bundle wrapper spanning the
+whole file, and propagating the label there would mark the entire module as
+scaffolding.
+
+Not to be confused with the `anti-analysis` **anchor keyword hit** in
+`analysis.json` (see Limitations). That is a text match from the anchor pass
+saying "this file mentions things that frustrate static reading"; this is a
+per-function role in `xray.json` with AST evidence attached.
 
 Two limits worth repeating to whoever reads your explanation:
 
@@ -563,6 +634,7 @@ A custom list **replaces** the defaults, so re-include any built-ins you want.
 | another VM-obfuscation signal | `detectVmSignals()` and its `VM_*` thresholds | `scripts/structure.mjs` |
 | another capability from calls | `CALL_MARKERS` | `scripts/explain.py` |
 | another role | the `add()` calls in `classify()` | `scripts/explain.py` |
+| another anti-analysis stub shape | `anti_analysis_signals()` and its `SELF_CHECK_*` / `DEBUGGER_STRINGS` / `CONSOLE_HOOK_*` tables | `scripts/explain.py` |
 | another porting snippet | `PORT_SNIPPETS` | `scripts/report.py` |
 
 `PORT_SNIPPETS` is keyed by `(family, multiply_style)`. Use `None` for the style
@@ -588,6 +660,10 @@ For a walkthrough of common obfuscation shapes and how to validate a port, see
   network-fetched code. An `anti-analysis` hit in `analysis.json` (the anchor
   pass, not a role in `xray.json`) is a hint that static reading will be
   incomplete.
+  This is a *different thing* from the `anti-analysis scaffolding` role in
+  `xray.json`: the anchor hit is a keyword match over the file text, while the
+  role is a per-function verdict with AST evidence. A file can have either
+  without the other.
 - **Very large bundles**: extract the relevant module first, or raise `--top`.
 - **VM-obfuscated files cannot be read statically.** JSVMP-style protection
   compiles the original logic into a bytecode array and ships an interpreter for

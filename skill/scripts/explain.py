@@ -100,6 +100,195 @@ CALL_MARKERS = {
     "dom": ("document.querySelector", "document.getElement", "document.createElement"),
 }
 
+# ---- anti-analysis scaffolding (javascript-obfuscator self-defending /
+# ---- debugProtection / disableConsoleOutput) --------------------------------
+#
+# These stubs are not the module's logic. They are boilerplate the obfuscator
+# injects to make the file unpleasant to debug, and their shape is close to
+# fixed. webcrack removes them when it recognises them, but its matchers require
+# an exact AST shape (an exact two-statement function body, an exact
+# [VariableDeclaration, ReturnStatement] IIFE body), so any later pass that
+# perturbs the shape -- a bundler, a minifier, a re-obfuscation -- leaves them
+# in the file. Note that webcrack.json's "self-defending, debug-protection,
+# jsx, jsx-new" count is a grouped pass counter, not a removal count: it reads
+# the same whether or not anything was actually removed, so it cannot be used
+# to decide this.
+#
+# What surviving stubs cost: on a fixture of 6 real functions they add 23 more,
+# so a role histogram reads as a 29-function module of which most is
+# unclassified, and any role they do pick up is a claim about scaffolding
+# presented next to claims about the module.
+#
+# This labels rather than deletes. Removing the functions would leave a reader
+# unable to check the call, and the project's existing choice for VM
+# obfuscation was to warn with evidence rather than drop the functions. The
+# label keeps the stubs auditable while letting a reader (and summary.roles)
+# separate scaffolding from logic.
+
+ANTI_ANALYSIS_ROLE = "anti-analysis scaffolding"
+
+# The regexes these stubs build to inspect their own source text. Both are
+# literal strings in javascript-obfuscator's output, so they are matched as
+# exact substrings rather than sniffed for "looks like a regex".
+#
+#   "(((.+)+)+)+$"     -- catastrophic-backtracking bait in the self-defending
+#                         toString() check
+#   "function *\( *\)" -- the self-defending source-shape assertion
+#   "\w+ *\( *\)"     -- the same assertion in the string-array decoder's
+#                         self-check
+#   "\+\+ *(?:[a-zA-Z_$]..." -- the debug-protection counter assertion
+SELF_CHECK_PATTERNS = (
+    "(((.+)+)+)+$",
+    "function *\\( *\\)",
+    "\\w+ *\\( *\\)",
+    "\\+\\+ *(?:[a-zA-Z_$]",
+)
+
+# Strings only a debugger trap constructs. "debugger" is passed to Function or
+# .constructor to build a debugger statement dynamically, which is how these
+# stubs survive a transform that would drop a bare one; "while (true) {}" is
+# the hang-the-tab variant.
+DEBUGGER_STRINGS = ("debugger", "while (true) {}", "while(true){}")
+
+# The global-object reacquisition preamble. Every one of these stubs starts by
+# re-deriving the global object through the Function constructor so it works
+# outside its original scope. Distinctive enough to name, but on its own it is
+# only a hint: it appears in legitimate universal-module preambles too.
+GLOBAL_REACQUIRE = 'constructor("return this")'
+
+# The console methods disableConsoleOutput overwrites, in the order it emits
+# them. Real code hooks console too, so the list alone proves nothing -- what
+# distinguishes the stub is that it takes the whole set including the ones no
+# application logs through.
+CONSOLE_HOOK_METHODS = ("log", "warn", "info", "error", "exception", "table", "trace")
+
+# How much of that set has to be present. "exception", "table" and "trace" are
+# the tell: a logger wrapper hooks log/warn/error, it does not enumerate
+# console.exception. Requiring 5 of 7 admits the stub and excludes the wrapper.
+CONSOLE_HOOK_MIN = 5
+
+
+# Calls that mean the function is actually *running* a source self-check rather
+# than merely holding the pattern as data. This distinction is load-bearing: an
+# obfuscated string-array provider carries every literal the module uses in one
+# table, including the self-check regex, so matching on the literal alone tags
+# the decoder that supplies the module's own strings. Such a provider makes no
+# calls at all -- it returns its table -- while the stub reads a function body
+# and matches it.
+SELF_CHECK_EXECUTORS = ("toString", "search", "test", "match", "RegExp", "exec")
+
+
+def anti_analysis_signals(fn):
+    """Signals that a function is obfuscator anti-analysis scaffolding.
+
+    Returns a list of (kind, evidence) pairs. Each entry is a fact about the
+    AST, so the caller can publish them as the evidence for its verdict rather
+    than asserting the verdict alone.
+    """
+    calls = fn.get("calls", []) or []
+    strings = fn.get("strings", []) or []
+    rets = fn.get("returns", []) or []
+    # returns[] holds generated source previews, so a self-check that lives in
+    # a returned expression is visible there and nowhere else.
+    text_pool = list(strings) + list(rets)
+    out = []
+
+    if fn.get("debugger_statements"):
+        out.append(("debugger-statement",
+                    "contains %d bare debugger statement(s)"
+                    % fn["debugger_statements"]))
+
+    dbg = sorted({s for s in strings if s in DEBUGGER_STRINGS})
+    if dbg:
+        out.append(("debugger-string",
+                    "builds a debugger trap from the literal(s) %s"
+                    % ", ".join(repr(s) for s in dbg)))
+
+    checks = sorted({p for p in SELF_CHECK_PATTERNS
+                     if any(p in t for t in text_pool)})
+    # Requires the pattern *and* a call that could apply it. See
+    # SELF_CHECK_EXECUTORS: without this, every string-array provider whose
+    # table happens to include the literal gets tagged, which is how the real
+    # Sentinel SDK's own string decoders came out as scaffolding.
+    if checks and _has(calls, SELF_CHECK_EXECUTORS):
+        out.append(("source-self-check",
+                    "tests its own source text against %s"
+                    % ", ".join(repr(c) for c in checks)))
+        checks_active = True
+    else:
+        checks_active = False
+
+    # toString() on a function, fed to a regex or search: the stub reading its
+    # own body to see whether it has been reformatted by a debugger.
+    if checks_active and _has(calls, ("toString",)):
+        out.append(("tostring-inspection",
+                    "reads its own body with toString() and matches it"))
+
+    if any(GLOBAL_REACQUIRE in t for t in text_pool):
+        out.append(("global-reacquire",
+                    "re-derives the global object via %s" % GLOBAL_REACQUIRE))
+
+    hooked = [m for m in CONSOLE_HOOK_METHODS if m in strings]
+    if len(hooked) >= CONSOLE_HOOK_MIN:
+        out.append(("console-override",
+                    "overwrites %d console methods including %s"
+                    % (len(hooked), ", ".join(hooked))))
+
+    # Self-recursion with no loop of its own: the shape of the debug-protection
+    # counter, which re-enters itself instead of iterating. Corroborating only,
+    # never sufficient -- plenty of real code recurses.
+    name = fn.get("name")
+    if name and name in calls and not (fn.get("control") or {}).get("loops"):
+        out.append(("self-recursion", "calls itself (%s) with no loop" % name))
+
+    return out
+
+
+def anti_analysis_role(fn):
+    """The anti-analysis role for a function, or None.
+
+    A required condition plus corroboration, deliberately, because the cheap
+    version of this check destroys findings rather than adding one. Normal code
+    hooks console, measures time and validates with regexes; tagging on any one
+    of those would relabel a module's real error handling as scaffolding, and a
+    reader who is told a function is boilerplate stops reading it.
+
+    So one of three things specific to these stubs has to be present:
+
+      * a debugger trap (a bare debugger statement, or "debugger" handed to a
+        function constructor),
+      * a source self-check against one of the obfuscator's literal regexes,
+      * a console override that takes essentially the whole console surface.
+
+    Confidence then reflects how much agrees. Two or more required-tier signals,
+    or one plus corroboration, is the full fingerprint and reads "high"; a lone
+    required signal stays "medium", because a hand-written debugger trap is a
+    real thing a reader may still want to look at.
+    """
+    signals = anti_analysis_signals(fn)
+    if not signals:
+        return None
+
+    kinds = {k for k, _ in signals}
+    required = kinds & {"debugger-statement", "debugger-string",
+                        "source-self-check", "console-override"}
+    if not required:
+        # Only corroborating signals: a global-object preamble or a recursive
+        # helper. Both occur in ordinary code, so nothing is claimed.
+        return None
+
+    corroborating = kinds - required
+    if len(required) >= 2 or (required and corroborating):
+        confidence = "high"
+    else:
+        confidence = "medium"
+
+    return {
+        "role": ANTI_ANALYSIS_ROLE,
+        "confidence": confidence,
+        "evidence": [ev for _k, ev in signals],
+    }
+
 
 def _has(haystack, needles):
     return [n for n in needles if any(n in h for h in haystack)]
@@ -188,6 +377,18 @@ def classify(fn, by_id):
 
     def add(role, confidence, evidence):
         roles.append({"role": role, "confidence": confidence, "evidence": evidence})
+
+    # --- obfuscator anti-analysis scaffolding ---
+    # Decided first, and it suppresses the weak fallback roles below rather than
+    # sitting next to them. A debug-protection stub throws to break out of its
+    # own recursion, which the error-path rule reads as validation; publishing
+    # both would put a claim about the module's error handling next to the
+    # evidence that this is not the module. The strong capability rules still
+    # run: if a stub genuinely performs network I/O that is worth knowing, and
+    # nothing about this label should hide it.
+    anti = anti_analysis_role(fn)
+    if anti is not None:
+        roles.append(anti)
 
     # --- named algorithm: the strongest signal available ---
     if algos:
@@ -288,6 +489,16 @@ def rollup_child_roles(fns, by_id, roles_by_id):
     carries the finding. Reading a flow at that level would miss the algorithm
     entirely. The inherited role is marked so it is never mistaken for a direct
     observation.
+
+    Anti-analysis scaffolding is excluded from this. The rollup's premise is
+    that a wrapper holding one closure is *about* what that closure does, which
+    holds for a hash loop and fails badly here: an obfuscator injects its stubs
+    as siblings of the real logic, so the enclosing function is usually the
+    bundle wrapper spanning the whole file. Propagating the label there marks
+    the entire module as scaffolding, which is the one outcome worse than not
+    labelling it at all -- it would tell a reader to skip the code they came
+    for. A stub is always reported on the function that actually contains the
+    trap.
     """
     order = sorted(fns, key=lambda f: -(f.get("start_line") or 0))
     for fn in order:
@@ -298,7 +509,7 @@ def rollup_child_roles(fns, by_id, roles_by_id):
             if child is None or child.get("name"):
                 continue  # named children are reachable on their own
             for r in roles_by_id.get(child_id, []):
-                if r["role"] in ("unclassified",) or r["role"] in own:
+                if r["role"] in ("unclassified", ANTI_ANALYSIS_ROLE) or r["role"] in own:
                     continue
                 own.add(r["role"])
                 inherited.append({

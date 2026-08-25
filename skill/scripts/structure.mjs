@@ -568,6 +568,13 @@ export function extractStructure(code) {
         storage: [],
         throws: [],
         returns: [],
+        // Bare `debugger` statements. Recorded as its own fact because a
+        // debugger statement reaches no other field here: it is a statement,
+        // not a call, so it leaves no trace in calls[] or strings[]. It is
+        // also the least ambiguous marker of an anti-debugging trap, which
+        // explain.py requires before labelling a function anti-analysis
+        // scaffolding.
+        debugger_statements: 0,
         awaits: 0,
         reads_this: [],
         writes_this: [],
@@ -755,6 +762,11 @@ export function extractStructure(code) {
     AwaitExpression(path) {
       const owner = ownerOf(path);
       if (owner) owner.awaits += 1;
+    },
+
+    DebuggerStatement(path) {
+      const owner = ownerOf(path);
+      if (owner) owner.debugger_statements += 1;
     },
 
     ThrowStatement(path) {
