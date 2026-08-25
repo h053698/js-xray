@@ -30,6 +30,10 @@ EMPTY = {
     "call_graph": {"edges": [], "resolution": "unavailable"},
     "module": {"exports": [], "imports": [], "global_assignments": []},
     "literals": {"urls": [], "paths": []},
+    # No AST, so no VM detection was attempted. "unknown" rather than "none":
+    # claiming a file is not VM-obfuscated on the strength of a failed parse
+    # would be the silent wrongness the verdict exists to prevent.
+    "vm_signals": {"verdict": "unknown", "score": 0, "signals": []},
 }
 
 
@@ -102,12 +106,16 @@ def summarize(data):
     """One-line summary for pipeline logs."""
     if data.get("error"):
         return data["error"]
-    return "%d functions, %d classes, %d call edges, %d urls" % (
+    line = "%d functions, %d classes, %d call edges, %d urls" % (
         len(data.get("functions", [])),
         len(data.get("classes", [])),
         len(data.get("call_graph", {}).get("edges", [])),
         len(data.get("literals", {}).get("urls", [])),
     )
+    vm = (data.get("vm_signals") or {}).get("verdict")
+    if vm and vm not in ("none", "unknown"):
+        line += " -- VM obfuscation %s (score %s)" % (vm, (data.get("vm_signals") or {}).get("score"))
+    return line
 
 
 def main():
