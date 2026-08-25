@@ -18,7 +18,7 @@ Nothing from the input is executed except inside WebCrack's sandboxed isolate.
 python3 scripts/xray.py <input.js>
 ```
 
-Prints the path to `xray.json` and writes `xray_<name>/` next to the input:
+Prints the path to `xray.json` and writes `<name>.xrayjs/` next to the input:
 
 | file | contents |
 | --- | --- |
@@ -30,9 +30,66 @@ Prints the path to `xray.json` and writes `xray_<name>/` next to the input:
 | `webcrack.js` | intermediate, before the second inlining pass |
 | `webcrack.json` | what WebCrack detected (string array, rotation, decoders) |
 | `inline.json` | second-pass results: scoped arrays, decoders, replacements |
+| `xray.toon` | `xray.json`'s content re-encoded as [TOON](https://github.com/toon-format/toon) - read this instead of `xray.json` when re-loading the result into an LLM context and every byte counts |
+| `toon_stats.json` | the measured char/token reduction of `xray.toon` vs `xray.json` for this run - read this to see the actual savings, not an assumed one |
+| `pipeline.json` | run log: what each stage actually did, its command, ok/fail, and its own stdout metadata -- read this after a run to see which stage degraded or failed, instead of scrolling stderr |
 
-Six stages: **deobfuscate -> inline -> structure -> explain -> anchors -> report**.
+Seven stages: **deobfuscate -> inline -> structure -> explain -> anchors -> report -> encode TOON**.
 Each writes its own file, so a stage that degrades is visible rather than silent.
+
+Once a run exists, `scripts/xq.py` queries these artifacts a question at a time
+instead of re-reading `xray.json` for each one - see
+[the query CLI](#the-query-cli-xqpy).
+
+### xray.json or xray.toon?
+
+Same data, two encodings. Default to `xray.json` for everything below in this
+document - it is the canonical schema and every example refers to its field
+names. Read `xray.toon` instead only when you are about to load the result back
+into an LLM context (your own next turn, a sub-agent, a summarization pass) and
+want the same facts for materially fewer tokens; `toon_stats.json` in the same
+directory has the measured reduction for that run, so you do not have to take
+the savings on faith. Do not use `xray.toon` as a source for anything that
+parses field-by-field against the schema below - use `xray.json` for that, the
+two are equivalent but the schema section documents the JSON shape.
+
+### Answering a question about this run
+
+Most questions are narrower than the whole file. `scripts/xq.py` answers those
+from the artifacts already on disk for a few hundred tokens each, so a symbol
+lookup does not cost the same as reading everything:
+
+```bash
+xq <subcommand> [args] [--json]        # from the directory holding the run
+xq <name>.js <subcommand> [args]       # or name the source file
+```
+
+The path is optional: run `xq` where the `.xrayjs` directory is and it finds it.
+Below, `xq ...` means either form - drop in `python3 skill/scripts/xq.py` if `xq`
+is not installed (`sh scripts/install-xq.sh`).
+
+| question | read |
+| --- | --- |
+| "What does this module do?" / "Explain it to me" | `xray.json` -> `summary`, `flows[]` (see below), or `xq summary` for the short form |
+| "What is function `on`?" | `xq show on` - its roles, evidence, calls, network contract **and** its source from `clean.js`, in one answer |
+| "Where is the symbol that does X?" | `xq find X` - one line per hit; add `--strings` to search string literals too |
+| "Who calls this? What does it call?" | `xq callers on` / `xq callees on`, `--depth N` for more hops |
+| "Where does this function sit in the flow?" | `xq flow on` - only the flows it appears in, not all of `flows[]` |
+| "How do I reimplement/decrypt this?" | `xq port` for the whole spec, `xq port FNV` for one algorithm with its Python snippet; or `xray.json` -> `porting` |
+| "Which function contains this line/string?" | `xq grep <pattern>` - like `grep` over `clean.js`, but each hit names its enclosing function |
+| "Where does control enter?" | `xq entries [--traced]` |
+| "Which functions hash / fingerprint / send?" | `xq roles hash`, or `xq roles` for the histogram |
+| "What did the pipeline actually do on this run? Did anything fail or degrade?" | `pipeline.json` - each stage's `ok`, `meta`, and `cmd` in order, no source reading required |
+| "Why does `xray.json` look empty/degraded?" | `pipeline.json` for which stage failed, then that stage's raw stdout/stderr; `confidence_notes[]` in `xray.json` for caveats |
+| "Is the string-array deobfuscation trustworthy?" | `webcrack.json` (`"string array"`, `decoders`) and `inline.json` (`unresolved`, `rolled_back`) |
+| "Can I trust these findings as the module's real logic at all?" | `xray.json` -> `summary.vm_obfuscation`; anything but `none` means the analysis describes a bytecode interpreter, with the evidence in `vm_signals` |
+| "I need the facts but I'm token-constrained" | `xq` for a specific question; `xray.toon` (+ `toon_stats.json`) when you genuinely need all of it |
+| "What exactly ran, and can I reproduce this stage by hand?" | `pipeline.json` -> that stage's `cmd` list, runnable as-is |
+
+**Read `xray.json` whole when the question is broad** - explaining the module,
+or porting it end to end. **Reach for `xq` when the question is narrow**, which
+in practice is most of reverse engineering: one symbol, one caller chain, one
+constant. See [the query CLI](#the-query-cli-xqpy) below for the subcommands.
 
 Useful flags:
 
@@ -100,6 +157,127 @@ happens - so the rounding is part of the algorithm, and the sign matters too.
 `report.md` emits the matching snippet; for `mixed` it deliberately emits none,
 because a confident wrong snippet costs more than an absent one.
 
+## The query CLI (xq.py)
+
+`xq` answers one question at a time from the artifacts a run already produced.
+It adds no stage and repeats no analysis - every value it prints was decided by
+`explain.py` and written to a file. Reach for it when the question is narrower
+than the file, which is most of reverse engineering: `xray.json` costs the same
+~15k tokens whether the answer is one line or all of it, and four questions in,
+the context is gone.
+
+### Installing it
+
+```bash
+sh scripts/install-xq.sh        # symlinks xq onto the PATH; --dry-run to preview
+```
+
+That links `xq` into `~/.local/bin` (or `~/bin`), leaves an unrelated `xq` alone,
+and is safe to re-run. Without it, every example below still works as
+`python3 skill/scripts/xq.py ...`.
+
+### Naming the run
+
+```bash
+xq [TARGET] <subcommand> [args] [--json]
+```
+
+`TARGET` is optional, and leaving it out is the point: the path is pure overhead
+on a tool whose reason to exist is spending fewer tokens per answer. It resolves
+in three steps.
+
+| you write | xq uses |
+| --- | --- |
+| `xq name.xrayjs show on` | that directory, exactly as before |
+| `xq name.js show on` | the `name.xrayjs` beside the source file |
+| `xq show on` | the one `.xrayjs` directory in the current directory |
+
+The cwd search looks one level down, no deeper. Two candidates there makes `xq`
+list them and exit non-zero rather than choose - a right answer about the wrong
+file is indistinguishable from a right answer, so it is never guessed. The run it
+settled on goes to stderr; stdout stays the answer alone, `--json` included.
+
+| subcommand | answers |
+| --- | --- |
+| `summary` | what the file is, the role histogram, endpoints, and the caveats. Start here; it is ~1KB |
+| `find PATTERN` | symbol search over display names and raw names. Regex, or substring when the pattern is not valid regex. `--strings` also searches string literals and url/path literals |
+| `show NAME\|ID` | the complete answer for one function: its `functions[]` entry **and** its source from `clean.js`. Source truncates at 40 lines; `--full` or `--lines N` overrides |
+| `callers NAME` / `callees NAME` | call relationships from `structure.json`'s `call_graph.edges`, `--depth N` for more hops. Every answer repeats that the edges are name-resolved |
+| `flow NAME` | only the flows that function appears in, with its own step marked `>` |
+| `port [NAME]` | the porting spec. No argument gives algorithms, network contracts, inputs and pitfalls; an algorithm name, id or family gives just that one, with the Python snippet `report.md` would emit |
+| `grep PATTERN` | search `clean.js` and name the enclosing function for every hit - the part plain `grep` cannot tell you |
+| `entries [--traced]` | entry points, with `why` and which ones were traced |
+| `roles [ROLE]` | functions carrying a role, or the histogram when no role is named |
+
+Functions are addressable by id (`fn197`) or name (`on`). An ambiguous name lists
+the candidates and asks for an id instead of picking one. Text output is the
+default because it is the compact form; `--json` gives the same values for
+scripting.
+
+A worked sequence, which is how the tool is meant to be used - each step a few
+hundred tokens, no full-file read anywhere in it:
+
+```bash
+cd wherever/sentinel_sdk.xrayjs/..   # no path in any command after this
+xq summary              # 220 functions, one fetch, FNV+murmur3
+xq roles hash           # -> fn49, fn48 carry hash/digest
+xq show fn49            # the iife, its constants, its source
+xq flow fn49            # where it sits in the traced path
+xq callers fn48         # who reaches its enclosing method
+xq port FNV             # constants, multiply style, snippet
+xq grep "Math.imul"     # confirm the multiply in the source
+```
+
+`callers` is asked about `fn48` rather than `fn49` there for a reason: `fn49` is
+an anonymous iife, and the call graph resolves by name, so nothing points at it.
+Use `flow` for anonymous functions and `callers` on the nearest named ancestor -
+`xq` reports the empty result rather than inventing an edge.
+
+`show on` on that sample:
+
+```
+fn197  on  L1102-1126
+async on(t, n)   importance 80   reached from an entry point
+
+role: network transport (high)
+      performs fetch
+      target Zt + "req"
+
+calls: fetch, rn, Date.now
+
+network: fetch POST Zt + "req"
+      body: rn({ p: n }, t)
+      credentials: include
+
+clean.js L1102-1126:
+1102    async function on(t, n) {
+...
+```
+
+### What xq will not do
+
+It never re-derives a finding. Roles, confidences, importances, algorithm
+families and flow steps are all served as written, so an answer from `xq` and an
+answer from `xray.json` cannot disagree - a query tool that made its own
+judgements would be worse than no query tool, because the caller who skipped
+`xray.json` has nothing to check it against. Two consequences worth knowing:
+
+- `xray.json` details only its top `--top` functions (25 by default). `find` and
+  `show` still answer for the rest, marked `~`, but with a name, a line range and
+  source only - there is no role or importance to report, and `xq` does not invent
+  one. Raise `--top` and re-run the pipeline if you need them classified.
+- An unknown `schema` value, a missing `xray.json`, or a missing `structure.json`
+  under `callers` is an error naming the file, not a quiet empty answer.
+- It will not pick between two runs. With the path omitted and several `.xrayjs`
+  directories in reach, it lists them and exits - the one wrong answer a caller
+  cannot detect is a correct one about the wrong file.
+
+When `summary.vm_obfuscation` is `vm-obfuscated` or `suspected`, `show`, `flow`,
+`port` and `summary` lead with a one-line warning. On a VM-obfuscated file every
+function is an interpreter part, and an agent querying one function at a time
+would otherwise never see the verdict.
+
+
 ## xray.json schema
 
 ```
@@ -107,6 +285,9 @@ schema           "js-xray/explanation/1"
 source_file      path analyzed (clean.js, unless deobfuscation was skipped)
 size             {lines, bytes}
 summary          {functions, classes, entry_points, roles{name:count}, endpoints[]}
+                 plus vm_obfuscation: "vm-obfuscated" | "suspected" | "none" |
+                 "unknown" -- check this first; when it is not "none" the rest of
+                 the file describes a bytecode interpreter, not the module
 entry_points[]   {id, name, line, why, traced, shares_flow_with?}
 flows[]          {entry, steps[], also_entered_by[]}
   steps[]        {depth, id, name, line, reached_by, does[], network?, algorithms?}
@@ -125,6 +306,11 @@ porting          {algorithms[], network_contracts[], inputs[], pitfalls[]}
                   credentials, function, id, line}
   inputs[]       {property, read_by[]}
   pitfalls[]     {issue, detail}
+vm_signals       {verdict, score, signals[]} -- the evidence behind
+                 summary.vm_obfuscation. verdict repeats the summary field;
+                 score is 0-100 weighted by which signals matched (the two core
+                 ones alone reach 70); signals[] is {kind, detail, line} per
+                 matched signal, so the dispatch loop can be found by hand
 deobfuscation    {strings_inlined, unresolved, arrays, decoders, rolled_back}
 confidence_notes[]  caveats that apply to the whole file
 ```
@@ -234,12 +420,16 @@ A custom list **replaces** the defaults, so re-include any built-ins you want.
 | --- | --- | --- |
 | another algorithm constant | `ALGO_CONSTANTS` | `scripts/structure.mjs` |
 | another global object | `TRACKED_ROOTS` | `scripts/structure.mjs` |
+| another VM-obfuscation signal | `detectVmSignals()` and its `VM_*` thresholds | `scripts/structure.mjs` |
 | another capability from calls | `CALL_MARKERS` | `scripts/explain.py` |
 | another role | the `add()` calls in `classify()` | `scripts/explain.py` |
 | another porting snippet | `PORT_SNIPPETS` | `scripts/report.py` |
 
 `PORT_SNIPPETS` is keyed by `(family, multiply_style)`. Use `None` for the style
 when the algorithm has no 32-bit multiply, as with `SHA-256`.
+
+A new `PORT_SNIPPETS` entry reaches `xq port` as well as `report.md`: `xq`
+imports `report.port_snippet` rather than keeping its own table.
 
 For a walkthrough of common obfuscation shapes and how to validate a port, see
 [references/analysis-guide.md](references/analysis-guide.md).
@@ -259,3 +449,16 @@ For a walkthrough of common obfuscation shapes and how to validate a port, see
   pass, not a role in `xray.json`) is a hint that static reading will be
   incomplete.
 - **Very large bundles**: extract the relevant module first, or raise `--top`.
+- **VM-obfuscated files cannot be read statically.** JSVMP-style protection
+  compiles the original logic into a bytecode array and ships an interpreter for
+  it, so the only functions left to extract are the interpreter's own parts. The
+  pipeline detects this and says so -- `summary.vm_obfuscation`, the first entry
+  of `confidence_notes[]`, and a banner at the top of `report.md` -- but it does
+  **not** recover the bytecode. When the verdict is `vm-obfuscated`, stop: the
+  flows, roles and porting spec describe the virtual machine, and reporting them
+  as the module's behaviour would be confidently wrong. `suspected` means part of
+  the fingerprint matched; check `vm_signals[].line` against `clean.js` before
+  trusting a flow that runs through the dispatch loop. Detection is tuned against
+  false positives -- `vm-obfuscated` requires both a bitmasked dispatch switch
+  and constant jump addresses written back into its register -- so ordinary
+  minified bundles and hand-written state machines come back `none`.

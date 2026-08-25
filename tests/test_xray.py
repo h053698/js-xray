@@ -15,6 +15,8 @@ import analyze  # noqa: E402
 import explain  # noqa: E402
 import node_env  # noqa: E402
 import report  # noqa: E402
+import structure  # noqa: E402
+import xq  # noqa: E402
 
 BT = chr(96)
 PASS, FAIL = [], []
@@ -135,6 +137,75 @@ def test_pipeline_end_to_end():
         check("report has porting guide", "Reimplementation notes" in rep)
         check("report has code fence", (BT * 3 + "python") in rep)
         check("report shows FNV hint", "16777619" in rep)
+
+    pipeline_path = os.path.join(outdir, "pipeline.json")
+    check("pipeline.json written", os.path.isfile(pipeline_path), pipeline_path)
+    if os.path.isfile(pipeline_path):
+        pipeline = json.load(open(pipeline_path))
+        check("pipeline schema tagged", pipeline.get("schema") == "js-xray/pipeline/1",
+              pipeline.get("schema"))
+        check("pipeline records input path", pipeline.get("input") == fixture, pipeline.get("input"))
+        stages = pipeline.get("stages", [])
+        # full run (no --skip-* flags): all 7 stages present, in order, all ok
+        check("pipeline has 7 stages", len(stages) == 7, [s.get("label") for s in stages])
+        check("pipeline stages numbered in order",
+              [s.get("n") for s in stages] == list(range(1, len(stages) + 1)),
+              [s.get("n") for s in stages])
+        check("pipeline stages all report total=7",
+              all(s.get("total") == 7 for s in stages), [s.get("total") for s in stages])
+        check("pipeline stages all ok", all(s.get("ok") is True for s in stages),
+              [(s.get("label"), s.get("ok")) for s in stages])
+        for s in stages:
+            check("stage %r has label/ok/cmd/meta fields" % s.get("label"),
+                  all(k in s for k in ("label", "ok", "cmd", "meta", "n", "total", "duration_s")),
+                  s)
+        labels = [s.get("label", "") for s in stages]
+        check("stage order matches pipeline description",
+              ["deobfuscate" in labels[0], "inline" in labels[1], "structure" in labels[2],
+               "explain" in labels[3], "anchor" in labels[4], "report" in labels[5],
+               "TOON" in labels[6]] == [True] * 7,
+              labels)
+        # JSON-emitting stages (webcrack, inline, anchors) must parse into dicts
+        check("webcrack stage meta parsed as dict", isinstance(stages[0].get("meta"), dict), stages[0].get("meta"))
+        check("inline stage meta parsed as dict", isinstance(stages[1].get("meta"), dict), stages[1].get("meta"))
+        check("anchor stage meta parsed as dict", isinstance(stages[4].get("meta"), dict), stages[4].get("meta"))
+        # summary-only stages (structure, explain, report) keep the raw stdout string
+        check("structure stage meta is a raw string", isinstance(stages[2].get("meta"), str), stages[2].get("meta"))
+        check("explain stage meta is a raw string", isinstance(stages[3].get("meta"), str), stages[3].get("meta"))
+
+
+def test_default_outdir_naming():
+    """Default output dir must be <stem>.xrayjs/ next to the input, and an
+    explicit -o override must still be honoured verbatim (DEC-003 / REQ-001)."""
+    print("default outdir naming")
+    workdir = tempfile.mkdtemp(prefix="jsxray_outdir_")
+    try:
+        js = os.path.join(workdir, "sentinel_pow.js")
+        open(js, "w").write("export const sum = (a, b) => a + b;\n")
+
+        # default: no -o given -> "<stem>.xrayjs" next to the input, not "xray_<stem>"
+        proc = subprocess.run(
+            [sys.executable, os.path.join(SCRIPTS, "xray.py"), js,
+             "--skip-deobfuscate", "--skip-inline", "--skip-anchors"],
+            capture_output=True, text=True)
+        check("default naming: exit 0", proc.returncode == 0, proc.stderr[-400:])
+        expected_default = os.path.join(workdir, "sentinel_pow.xrayjs")
+        legacy_default = os.path.join(workdir, "xray_sentinel_pow")
+        check("default naming: <stem>.xrayjs created", os.path.isdir(expected_default), expected_default)
+        check("default naming: report.md present", os.path.isfile(os.path.join(expected_default, "report.md")))
+        check("default naming: legacy xray_<stem> not created", not os.path.isdir(legacy_default), legacy_default)
+
+        # explicit -o must still be honoured exactly, unaffected by the default rule
+        custom_outdir = os.path.join(workdir, "wherever-i-want")
+        proc2 = subprocess.run(
+            [sys.executable, os.path.join(SCRIPTS, "xray.py"), js, "-o", custom_outdir,
+             "--skip-deobfuscate", "--skip-inline", "--skip-anchors"],
+            capture_output=True, text=True)
+        check("outdir override: exit 0", proc2.returncode == 0, proc2.stderr[-400:])
+        check("outdir override: exact path used", os.path.isdir(custom_outdir), custom_outdir)
+        check("outdir override: report.md present", os.path.isfile(os.path.join(custom_outdir, "report.md")))
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
 
 
 def test_custom_anchors():
@@ -466,6 +537,850 @@ def test_reachability_ignores_flow_budget():
     shutil.rmtree(outdir, ignore_errors=True)
 
 
+
+def test_pipeline_log_records_failure():
+    """A failed stage must still show up in pipeline.json, not just on stderr.
+
+    Points --anchors at a path that does not exist. load_anchors() calls
+    open() on it directly and lets FileNotFoundError propagate, so the anchor
+    scan stage exits non-zero after deobfuscate/inline/structure/explain have
+    already succeeded -- the shape that used to lose everything to stderr.
+    """
+    print("pipeline log on stage failure")
+    fixture = os.path.join(ROOT, "fixtures", "sample_obfuscated.js")
+    if not os.path.isfile(fixture):
+        check("fixture present for failure test", False, fixture)
+        return
+
+    outdir = tempfile.mkdtemp(prefix="jsxray_fail_")
+    missing_anchors = os.path.join(outdir, "does_not_exist_anchors.json")
+    try:
+        proc = subprocess.run(
+            [sys.executable, os.path.join(SCRIPTS, "xray.py"), fixture, "-o", outdir,
+             "--anchors", missing_anchors],
+            capture_output=True, text=True)
+        check("pipeline exits non-zero on stage failure", proc.returncode == 1, proc.returncode)
+
+        pipeline_path = os.path.join(outdir, "pipeline.json")
+        check("pipeline.json still written on failure", os.path.isfile(pipeline_path), pipeline_path)
+        if not os.path.isfile(pipeline_path):
+            return
+
+        pipeline = json.load(open(pipeline_path))
+        stages = pipeline.get("stages", [])
+        # deobfuscate, inline, structure, explain succeeded; anchor scan failed
+        # and stopped the run, so report/TOON never executed and never appear.
+        check("failed run stops at the failing stage", len(stages) == 5,
+              [s.get("label") for s in stages])
+        if len(stages) != 5:
+            return
+        check("stages before the failure all ok",
+              all(s.get("ok") is True for s in stages[:4]),
+              [(s.get("label"), s.get("ok")) for s in stages[:4]])
+        failed = stages[4]
+        check("failing stage is the anchor scan", "anchor" in failed.get("label", ""),
+              failed.get("label"))
+        check("failing stage recorded ok=False", failed.get("ok") is False, failed)
+        check("failing stage still has cmd/meta fields",
+              "cmd" in failed and "meta" in failed, failed)
+        check("failing stage cmd references the missing anchors file",
+              any(missing_anchors in str(part) for part in (failed.get("cmd") or [])),
+              failed.get("cmd"))
+    finally:
+        shutil.rmtree(outdir, ignore_errors=True)
+
+
+def test_toon_stage():
+    """The TOON stage must run unconditionally and produce a decodable xray.toon.
+
+    Running the full pipeline (webcrack included) just to exercise this stage
+    would be slow and redundant with test_pipeline_end_to_end. Instead this
+    calls toon_stats.py directly against the checked-in xray.json sample, which
+    is what the orchestrator does as its last step -- see xray.py's "encode
+    TOON" stage.
+    """
+    print("toon encode stage")
+    sample = os.path.join(ROOT, "tests", "samples", "xray_sentinel_sdk", "xray.json")
+    if not os.path.isfile(sample):
+        check("xray_sentinel_sdk/xray.json present", False, sample)
+        return
+
+    outdir = tempfile.mkdtemp(prefix="jsxray_toon_")
+    toon_path = os.path.join(outdir, "xray.toon")
+    stats_path = os.path.join(outdir, "toon_stats.json")
+    proc = subprocess.run(
+        [sys.executable, os.path.join(SCRIPTS, "toon_stats.py"), sample, toon_path, "--stats", stats_path],
+        capture_output=True, text=True)
+    check("toon stage exit 0", proc.returncode == 0, proc.stderr[-400:])
+    check("xray.toon written", os.path.isfile(toon_path))
+    check("toon_stats.json written", os.path.isfile(stats_path))
+
+    if not (os.path.isfile(toon_path) and os.path.isfile(stats_path)):
+        shutil.rmtree(outdir, ignore_errors=True)
+        return
+
+    stats = json.load(open(stats_path))
+    for key in ("json_chars", "toon_chars", "char_reduction_pct",
+                "json_tokens", "toon_tokens", "token_reduction_pct", "tokenizer"):
+        check("stats has %s" % key, key in stats, stats)
+    check("toon is smaller than json", stats["toon_chars"] < stats["json_chars"],
+          "toon=%s json=%s" % (stats.get("toon_chars"), stats.get("json_chars")))
+    check("char reduction is positive", stats["char_reduction_pct"] > 0, stats["char_reduction_pct"])
+    if stats["tokenizer"] is None:
+        # tiktoken not installed in this environment -- confirm the fallback is
+        # explicit rather than a silently-null token field
+        check("token fields null without tiktoken",
+              stats["json_tokens"] is None and stats["toon_tokens"] is None and
+              stats["token_reduction_pct"] is None, stats)
+        check("fallback noted on stderr", "tiktoken not installed" in proc.stderr, proc.stderr[-400:])
+    else:
+        check("token reduction is positive", stats["token_reduction_pct"] > 0, stats["token_reduction_pct"])
+
+    # round-trip xray.toon back against the real xray.json through the reference decoder
+    node = shutil.which("node")
+    decode_cli = os.path.join(ROOT, "skill", "tests", "_toon_ref_decode.mjs")
+    if node and os.path.isfile(decode_cli):
+        probe = subprocess.run([node, decode_cli], input="a: 1", capture_output=True, text=True,
+                                cwd=os.path.dirname(decode_cli))
+        if probe.returncode == 0:
+            toon_text = open(toon_path, encoding="utf-8").read()
+            dec = subprocess.run([node, decode_cli], input=toon_text, capture_output=True, text=True)
+            check("xray.toon decodes via reference decoder", dec.returncode == 0, dec.stderr[-400:])
+            if dec.returncode == 0:
+                decoded = json.loads(dec.stdout)
+                original = json.load(open(sample))
+                check("xray.toon round-trips to xray.json", decoded == original,
+                      "structural mismatch (see diff manually; both are large)")
+        else:
+            check("reference decoder resolvable for toon stage test", False,
+                  "run 'npm install' at the repo root\n" + probe.stderr[-400:])
+    else:
+        check("reference decoder available for toon stage test", False,
+              "node=%r decode_cli_exists=%s -- skipping round-trip check" %
+              (node, os.path.isfile(decode_cli)))
+
+    shutil.rmtree(outdir, ignore_errors=True)
+
+
+def test_vm_detection_positive():
+    """A bytecode interpreter must be called out, not analyzed as if it were logic.
+
+    JSVMP compiles the original logic into a bytecode array and leaves only the
+    interpreter in the source. The pipeline still succeeds on such a file and
+    still fills in flows and functions -- all of them interpreter internals -- so
+    without this verdict the run looks like an ordinary success and the reader
+    never learns the result describes a virtual machine.
+    """
+    print("vm detection: positive")
+    fixture = os.path.join(ROOT, "fixtures", "vmp_interpreter.js")
+    if not os.path.isfile(fixture):
+        check("vmp fixture present", False, fixture)
+        return
+
+    data, err = structure.extract(fixture)
+    if err:
+        check("structure ran for the vmp fixture", False, err)
+        return
+
+    vm = data.get("vm_signals") or {}
+    check("vmp fixture judged vm-obfuscated", vm.get("verdict") == "vm-obfuscated",
+          "got %r (score %s, %s)" % (vm.get("verdict"), vm.get("score"),
+                                     [s["kind"] for s in vm.get("signals", [])]))
+
+    kinds = {s["kind"] for s in vm.get("signals", [])}
+    # the two signals a verdict of vm-obfuscated is required to rest on
+    check("masked dispatch switch found", "masked-switch-dispatch" in kinds, kinds)
+    check("numeric jump writes found", "dense-numeric-jumps" in kinds, kinds)
+    check("score reflects both core signals", (vm.get("score") or 0) >= 70, vm.get("score"))
+
+    # every signal must carry evidence a reader can check, not just a label
+    for sig in vm.get("signals", []):
+        check("signal %s carries a detail" % sig.get("kind"),
+              bool(sig.get("detail")), sig)
+    dispatch = [s for s in vm.get("signals", []) if s["kind"] == "masked-switch-dispatch"]
+    check("dispatch signal cites a line", dispatch and dispatch[0].get("line"),
+          dispatch)
+
+
+def test_vm_detection_no_false_positives():
+    """The cost of a false positive is higher than a miss, so this is the gate.
+
+    Calling an ordinary obfuscated file VM-obfuscated teaches a reader to
+    disbelieve results that were correct, which is worse than the silence this
+    detector replaces. sentinel_sdk.js is the case that matters: a real anti-bot
+    SDK, genuinely obfuscated, with a string array and deep closure nesting --
+    but not a bytecode VM. state_machine.js is the near-miss shape: a big switch
+    inside a loop, which is what control-flow flattening and hand-written
+    tokenizers both look like.
+    """
+    print("vm detection: no false positives")
+    clean_files = [
+        ("sentinel_sdk.js", os.path.join(ROOT, "tests", "samples", "sentinel_sdk.js")),
+        ("sample_obfuscated.js", os.path.join(ROOT, "fixtures", "sample_obfuscated.js")),
+        ("multi_scope_arrays.js", os.path.join(ROOT, "fixtures", "multi_scope_arrays.js")),
+        ("state_machine.js", os.path.join(ROOT, "fixtures", "state_machine.js")),
+    ]
+    for label, path in clean_files:
+        if not os.path.isfile(path):
+            check("%s present" % label, False, path)
+            continue
+        data, err = structure.extract(path)
+        if err:
+            check("structure ran for %s" % label, False, err)
+            continue
+        vm = data.get("vm_signals") or {}
+        check("%s not flagged as VM" % label, vm.get("verdict") == "none",
+              "got %r (score %s, %s)" % (vm.get("verdict"), vm.get("score"),
+                                         [s["kind"] for s in vm.get("signals", [])]))
+        # A clean file must also produce no warning downstream, since that is
+        # what a reader actually sees.
+        exp = explain.explain(data)
+        check("%s summary reports no VM" % label,
+              exp["summary"]["vm_obfuscation"] == "none",
+              exp["summary"]["vm_obfuscation"])
+        check("%s gets no VM confidence note" % label,
+              not any("VM-obfusc" in n for n in exp["confidence_notes"]),
+              exp["confidence_notes"][:1])
+
+
+def test_vm_warning_reaches_outputs():
+    """The verdict is only useful if it reaches what a caller reads.
+
+    Three consumers, three places it has to appear: an agent reads
+    summary.vm_obfuscation, an agent or human reading the notes must hit the
+    warning first rather than after three ordinary caveats, and a human opening
+    report.md must see it above the findings instead of below them.
+    """
+    print("vm warning propagation")
+    fixture = os.path.join(ROOT, "fixtures", "vmp_interpreter.js")
+    if not os.path.isfile(fixture):
+        check("vmp fixture present for propagation test", False, fixture)
+        return
+
+    outdir = tempfile.mkdtemp(prefix="jsxray_vm_")
+    try:
+        proc = subprocess.run(
+            [sys.executable, os.path.join(SCRIPTS, "xray.py"), fixture, "-o", outdir],
+            capture_output=True, text=True)
+        check("vm pipeline exit 0", proc.returncode == 0, proc.stderr[-400:])
+
+        xray_path = os.path.join(outdir, "xray.json")
+        check("xray.json written for vm file", os.path.isfile(xray_path), xray_path)
+        if not os.path.isfile(xray_path):
+            return
+        data = json.load(open(xray_path))
+
+        check("summary carries the machine-readable verdict",
+              data["summary"].get("vm_obfuscation") == "vm-obfuscated",
+              data["summary"].get("vm_obfuscation"))
+        check("vm_signals travel with the verdict as evidence",
+              (data.get("vm_signals") or {}).get("signals"), data.get("vm_signals"))
+
+        notes = data.get("confidence_notes") or []
+        check("VM warning is the first confidence note",
+              notes and "VM-obfuscated" in notes[0], notes[:1])
+        check("warning says the functions are interpreter internals",
+              notes and "interpreter" in notes[0], notes[:1])
+        check("ordinary notes are kept alongside it", len(notes) == 4, len(notes))
+
+        rep_path = os.path.join(outdir, "report.md")
+        check("report.md written for vm file", os.path.isfile(rep_path), rep_path)
+        if os.path.isfile(rep_path):
+            rep = open(rep_path).read()
+            check("report warns about VM obfuscation", "VM-obfuscated" in rep)
+            # above the findings: a warning under "Key functions" is a warning
+            # nobody reads before trusting them
+            warn_at = rep.find("VM-obfuscated")
+            check("warning precedes the summary table", warn_at < rep.find("| functions |"),
+                  "warning at %s, table at %s" % (warn_at, rep.find("| functions |")))
+            check("warning precedes the flows", warn_at < rep.find("## Flows"),
+                  "warning at %s, flows at %s" % (warn_at, rep.find("## Flows")))
+            check("report lists the signals as evidence",
+                  "masked-switch-dispatch" in rep and "dense-numeric-jumps" in rep)
+
+        # the run must not look like an ordinary success on stderr either
+        check("stderr warns about the VM verdict", "VM obfuscation" in proc.stderr,
+              proc.stderr[-300:])
+    finally:
+        shutil.rmtree(outdir, ignore_errors=True)
+
+
+SAMPLE_XRAYJS = os.path.join(ROOT, "tests", "samples", "xray_sentinel_sdk")
+
+
+def run_xq(*argv):
+    """xq as a subprocess, so the tests exercise the CLI a caller actually runs."""
+    return subprocess.run([sys.executable, os.path.join(SCRIPTS, "xq.py")] + list(argv),
+                          capture_output=True, text=True)
+
+
+def run_xq_in(cwd, *argv):
+    """xq with a chosen working directory, for the cases where cwd is the input."""
+    return subprocess.run([sys.executable, os.path.join(SCRIPTS, "xq.py")] + list(argv),
+                          capture_output=True, text=True, cwd=cwd)
+
+
+def test_xq_subcommands():
+    """Every subcommand has to answer on a real analysis, not just parse its args."""
+    print("xq subcommands")
+    if not os.path.isdir(SAMPLE_XRAYJS):
+        check("sample .xrayjs present", False, SAMPLE_XRAYJS)
+        return
+
+    cases = [
+        ("summary", ["summary"], ["functions 220", "network transport", "caveats:"]),
+        ("find by name", ["find", "getConfig"], ["fn56", "_.getConfig", "L316"]),
+        ("find is regex", ["find", "^on$"], ["fn197"]),
+        ("find literals", ["find", "sentinel", "--strings"], ["backend-api/sentinel"]),
+        ("show by name", ["show", "on"],
+         ["fn197", "network transport", "async on(t, n)", "await fetch"]),
+        ("show by id", ["show", "fn49"], ["FNV-1a 32-bit", "hash/digest"]),
+        ("callers", ["callers", "on"], ["callers of fn197", "via on", "resolution"]),
+        ("callees", ["callees", "on"], ["fn195", "rn"]),
+        ("callers depth", ["callers", "fn195", "--depth", "2"], ["fn197"]),
+        ("flow", ["flow", "fn49"], ["flow[0]", "_.getEnforcementTokenSync", "fn49"]),
+        ("port all", ["port"],
+         ["FNV-1a 32-bit", "multiply:  imul", "inputs a port must supply",
+          "pitfall:", "fetch POST"]),
+        ("port one algorithm", ["port", "FNV"], ["fn49", "2166136261"]),
+        ("grep", ["grep", "fetch"], ["1106", "fn197", "on"]),
+        ("entries", ["entries", "--traced"], ["fn41", "traced"]),
+        ("roles histogram", ["roles"], ["network transport"]),
+        ("roles filtered", ["roles", "hash"], ["fn49", "hash/digest"]),
+    ]
+    for label, argv, needles in cases:
+        proc = run_xq(SAMPLE_XRAYJS, *argv)
+        check("xq %s exits 0" % label, proc.returncode == 0, proc.stderr[-300:])
+        for needle in needles:
+            check("xq %s says %r" % (label, needle), needle in proc.stdout,
+                  proc.stdout[:200])
+
+    # --json has to parse for every command: it is the contract anything
+    # scripting against xq depends on
+    for argv in (["summary"], ["find", "on"], ["show", "on"], ["callers", "on"],
+                 ["callees", "on"], ["flow", "fn49"], ["port"], ["grep", "fetch"],
+                 ["entries"], ["roles", "hash"]):
+        proc = run_xq(SAMPLE_XRAYJS, "--json", *argv)
+        ok = proc.returncode == 0
+        detail = proc.stderr[-200:]
+        try:
+            json.loads(proc.stdout)
+        except ValueError as exc:
+            ok, detail = False, str(exc)
+        check("xq --json %s is valid json" % argv[0], ok, detail)
+
+    # source is the point of show: the real clean.js slice, truncated by default
+    # rather than dumping a 200-line function into the answer
+    clean = open(os.path.join(SAMPLE_XRAYJS, "clean.js")).read().splitlines()
+    got = json.loads(run_xq(SAMPLE_XRAYJS, "--json", "show", "fn197", "--full").stdout)
+    start, end = got["lines"]
+    check("show --full returns the exact clean.js slice",
+          got["source"] == clean[start - 1:end],
+          "%d lines vs %d" % (len(got["source"]), end - start + 1))
+    check("show --full omits nothing", got["source_omitted"] == 0, got["source_omitted"])
+    trunc = json.loads(run_xq(SAMPLE_XRAYJS, "--json", "show", "fn0").stdout)
+    check("show truncates a long function by default",
+          len(trunc["source"]) == xq.SRC_LIMIT and trunc["source_omitted"] > 0,
+          "%d lines, %d omitted" % (len(trunc["source"]), trunc["source_omitted"]))
+
+    # an ambiguous name lists candidates instead of silently picking one
+    proc = run_xq(SAMPLE_XRAYJS, "show", "s")
+    check("ambiguous name lists candidates", "re-run with an id" in proc.stdout,
+          proc.stdout[:200])
+    check("ambiguous name names the ids",
+          "fn1" in proc.stdout and "fn2" in proc.stdout, proc.stdout[:200])
+
+    # grep attributing a hit to the innermost enclosing function is the whole
+    # reason to use it over grep(1): fn49 is the iife inside _._runCheck
+    hits = json.loads(run_xq(SAMPLE_XRAYJS, "--json", "grep", "Math.imul").stdout)["hits"]
+    check("grep found the imul site", bool(hits), hits)
+    check("grep attributes imul to the inner iife, not its enclosing method",
+          any(h["id"] == "fn49" for h in hits), hits[:3])
+
+    # the name-resolution caveat travels with the edges it qualifies
+    edges = json.loads(run_xq(SAMPLE_XRAYJS, "--json", "callers", "on").stdout)
+    check("callers --json carries call_graph.resolution",
+          edges["resolution"] == "name-based (approximate)", edges.get("resolution"))
+    check("callers --json carries the caveat as text",
+          "name" in (edges.get("warning") or ""), edges.get("warning"))
+
+
+def test_xq_is_a_view_not_an_analysis():
+    """The risk this pins: xq answering from its own derivation of the facts.
+
+    A query tool that re-classified a role or recomputed an importance would
+    disagree with xray.json, and the caller -- who used xq precisely to avoid
+    reading xray.json -- would have no way to notice. So every functions[] entry
+    xq serves must be the canonical object itself, and the same for the porting
+    spec, the flows, the entry points and the summary.
+    """
+    print("xq matches xray.json exactly")
+    if not os.path.isdir(SAMPLE_XRAYJS):
+        check("sample .xrayjs present for fidelity test", False, SAMPLE_XRAYJS)
+        return
+    canon = json.load(open(os.path.join(SAMPLE_XRAYJS, "xray.json")))
+
+    mismatched = []
+    for fn in canon["functions"]:
+        got = json.loads(run_xq(SAMPLE_XRAYJS, "--json", "show", fn["id"]).stdout)
+        if got["function"] != fn:
+            mismatched.append(fn["id"])
+    check("show --json returns every one of the %d functions[] entries unchanged"
+          % len(canon["functions"]), not mismatched, mismatched[:5])
+
+    by_name = json.loads(run_xq(SAMPLE_XRAYJS, "--json", "show", "on").stdout)
+    by_id = json.loads(run_xq(SAMPLE_XRAYJS, "--json", "show", "fn197").stdout)
+    check("name and id resolve to the same function",
+          by_name["function"] == by_id["function"] and by_id["id"] == "fn197",
+          by_name["id"])
+
+    summary = json.loads(run_xq(SAMPLE_XRAYJS, "--json", "summary").stdout)
+    check("summary --json is the canonical summary",
+          summary["summary"] == canon["summary"], summary["summary"])
+    check("summary --json keeps the caveats verbatim",
+          summary["confidence_notes"] == canon["confidence_notes"])
+
+    entries = json.loads(run_xq(SAMPLE_XRAYJS, "--json", "entries").stdout)
+    check("entries --json is the canonical entry_points[]",
+          entries["entry_points"] == canon["entry_points"])
+
+    flow = json.loads(run_xq(SAMPLE_XRAYJS, "--json", "flow", "fn49").stdout)
+    check("flow --json extracts a flow without rewriting it",
+          bool(flow["flows"]) and flow["flows"][0]["steps"] ==
+          canon["flows"][flow["flows"][0]["index"]]["steps"],
+          [f["index"] for f in flow["flows"]])
+
+    port = json.loads(run_xq(SAMPLE_XRAYJS, "--json", "port").stdout)
+    for section in ("network_contracts", "inputs", "pitfalls"):
+        check("port --json keeps %s verbatim" % section,
+              port[section] == canon["porting"][section])
+    # algorithms may gain python_snippets and nothing else: that snippet is a
+    # lookup in report.PORT_SNIPPETS, not a fresh judgement about the algorithm
+    for got, want in zip(port["algorithms"], canon["porting"]["algorithms"]):
+        check("port --json leaves algorithm %s untouched" % want["id"],
+              all(got[k] == want[k] for k in want),
+              [k for k in want if got.get(k) != want[k]])
+        check("port --json adds only python_snippets to %s" % want["id"],
+              set(got) - set(want) == {"python_snippets"}, set(got) - set(want))
+
+    # the snippet must be report.py's own, so report.md and xq cannot drift apart
+    algo = canon["porting"]["algorithms"][0]
+    family = algo["families"][0]
+    expected = report.port_snippet(family, algo["multiply_style"])
+    served = json.loads(run_xq(SAMPLE_XRAYJS, "--json", "port", algo["id"]).stdout)
+    snippets = {s["family"]: s["python"]
+                for s in served["algorithms"][0]["python_snippets"]}
+    check("port serves report.py snippets rather than a copy",
+          snippets.get(family) == expected, snippets.get(family))
+
+    # labels for functions xray.json does not detail come from the same
+    # display_name that produced the published ones, so the two cannot diverge
+    struct = json.load(open(os.path.join(SAMPLE_XRAYJS, "structure.json")))
+    by_struct_id = explain.build_index(struct)
+    published = {fn["id"]: fn["name"] for fn in canon["functions"]}
+    for ep in canon["entry_points"]:
+        published[ep["id"]] = ep["name"]
+    drifted = [fid for fid, name in published.items()
+               if fid in by_struct_id
+               and explain.display_name(by_struct_id[fid], by_struct_id) != name]
+    check("undetailed functions are named by the function that named the rest",
+          not drifted, drifted[:5])
+
+
+def test_xq_token_budget():
+    """ACT-006: a narrow question must cost a fraction of reading xray.json.
+
+    This is why the tool exists, so it is asserted rather than assumed. Ten times
+    smaller is a floor, not the target -- the measured figures are well past it --
+    but a floor catches the regression that matters: a subcommand quietly growing
+    into a dump of the whole file.
+    """
+    print("xq token budget")
+    if not os.path.isdir(SAMPLE_XRAYJS):
+        check("sample .xrayjs present for budget test", False, SAMPLE_XRAYJS)
+        return
+    full = len(open(os.path.join(SAMPLE_XRAYJS, "xray.json")).read())
+
+    for label, argv in (("show", ["show", "on"]),
+                        ("find", ["find", "getConfig"]),
+                        ("summary", ["summary"])):
+        out = run_xq(SAMPLE_XRAYJS, *argv).stdout
+        ratio = full / max(len(out), 1)
+        check("%s costs 10x less than xray.json (%.0fx: %d vs %d chars)"
+              % (label, ratio, len(out), full), ratio >= 10)
+
+    # and one function answer stays well under the whole functions[] array, not
+    # merely under the whole file
+    canon = json.load(open(os.path.join(SAMPLE_XRAYJS, "xray.json")))
+    all_fns = len(json.dumps(canon["functions"]))
+    one = len(run_xq(SAMPLE_XRAYJS, "show", "on").stdout)
+    check("show of one function is far smaller than all of functions[] (%d vs %d)"
+          % (one, all_fns), one * 5 < all_fns)
+
+
+def test_xq_fails_loudly():
+    """Silence is the failure mode to avoid.
+
+    An unknown schema, a missing artifact or an unresolvable name each have to say
+    what is wrong -- and exit non-zero when the command cannot be answered at all.
+    A caller that skipped xray.json has nothing else to notice the gap with.
+    """
+    print("xq failure modes")
+    tmp = tempfile.mkdtemp(prefix="jsxray_xq_")
+    try:
+        # unknown schema: refuse, rather than answer from field names whose
+        # meaning may have changed under them
+        with open(os.path.join(tmp, "xray.json"), "w") as fh:
+            json.dump({"schema": "js-xray/explanation/99", "summary": {}}, fh)
+        proc = run_xq(tmp, "summary")
+        check("unknown schema exits non-zero", proc.returncode != 0, proc.returncode)
+        check("unknown schema names both schemas",
+              "js-xray/explanation/99" in proc.stderr
+              and "js-xray/explanation/1" in proc.stderr, proc.stderr[:200])
+
+        empty = tempfile.mkdtemp(prefix="jsxray_xq_empty_")
+        proc = run_xq(empty, "summary")
+        check("missing xray.json exits non-zero", proc.returncode != 0, proc.returncode)
+        check("missing xray.json is named", "xray.json" in proc.stderr,
+              proc.stderr[:200])
+        shutil.rmtree(empty, ignore_errors=True)
+
+        # a real xray.json with no structure.json: callers cannot be answered, and
+        # the error names the artifact instead of returning an empty list
+        partial = tempfile.mkdtemp(prefix="jsxray_xq_partial_")
+        shutil.copy(os.path.join(SAMPLE_XRAYJS, "xray.json"), partial)
+        proc = run_xq(partial, "callers", "on")
+        check("callers without structure.json exits non-zero",
+              proc.returncode != 0, proc.returncode)
+        check("callers without structure.json names it",
+              "structure.json" in proc.stderr, proc.stderr[:200])
+        proc = run_xq(partial, "grep", "fetch")
+        check("grep without clean.js names it",
+              proc.returncode != 0 and "clean.js" in proc.stderr, proc.stderr[:200])
+        # a question that needs neither still answers
+        proc = run_xq(partial, "show", "on")
+        check("show still answers from xray.json alone",
+              proc.returncode == 0 and "network transport" in proc.stdout,
+              proc.stdout[:200])
+        check("show says the source is unavailable rather than omitting it",
+              "clean.js missing" in proc.stdout, proc.stdout[-200:])
+        shutil.rmtree(partial, ignore_errors=True)
+
+        proc = run_xq(SAMPLE_XRAYJS, "show", "nosuchfunction")
+        check("unknown name is reported", "no function matches" in proc.stdout,
+              proc.stdout[:200])
+        check("unknown name suggests find", "find" in proc.stdout, proc.stdout[:200])
+
+        proc = run_xq(os.path.join(tmp, "nope"), "summary")
+        check("missing directory exits non-zero", proc.returncode != 0, proc.returncode)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_xq_warns_on_vm_obfuscated():
+    """A caller querying a VM-obfuscated file must be told before reading the answer.
+
+    xq is what makes reading xray.json optional, which also means the caller never
+    sees summary.vm_obfuscation unless xq shows it. Without the banner, "what does
+    fn0 do" gets a truthful answer about an interpreter part, and the caller
+    reports it as the module behaviour.
+    """
+    print("xq vm warning")
+    fixture = os.path.join(ROOT, "fixtures", "vmp_interpreter.js")
+    if not os.path.isfile(fixture):
+        check("vmp fixture present for xq", False, fixture)
+        return
+    outdir = tempfile.mkdtemp(prefix="jsxray_xq_vm_")
+    try:
+        proc = subprocess.run(
+            [sys.executable, os.path.join(SCRIPTS, "xray.py"), fixture, "-o", outdir],
+            capture_output=True, text=True)
+        check("vm pipeline ran for xq", proc.returncode == 0, proc.stderr[-300:])
+        data = json.load(open(os.path.join(outdir, "xray.json")))
+        check("fixture is the vm-obfuscated case",
+              data["summary"].get("vm_obfuscation") == "vm-obfuscated",
+              data["summary"].get("vm_obfuscation"))
+
+        for label, argv in (("show", ["show", "fn0"]), ("port", ["port"]),
+                            ("summary", ["summary"])):
+            out = run_xq(outdir, *argv).stdout
+            check("xq %s warns about the VM" % label, "VM-obfuscated" in out, out[:160])
+            # first line, not a footnote: a warning after the answer is one the
+            # caller has already acted on
+            check("xq %s warns before it answers" % label,
+                  out.lstrip().startswith("!"), out[:80])
+
+        flow_out = run_xq(outdir, "flow", "fn0").stdout
+        check("xq flow warns about the VM", "VM-obfuscated" in flow_out, flow_out[:160])
+        check("xq --json exposes the verdict for a caller that parses",
+              json.loads(run_xq(outdir, "--json", "show", "fn0").stdout)
+              .get("vm_obfuscation") == "vm-obfuscated")
+
+        # and a file that is not VM-obfuscated must not pick up a banner
+        clean_out = run_xq(SAMPLE_XRAYJS, "show", "on").stdout
+        check("no VM banner on a file that is not VM-obfuscated",
+              "VM-obfuscated" not in clean_out
+              and not clean_out.lstrip().startswith("!"), clean_out[:120])
+    finally:
+        shutil.rmtree(outdir, ignore_errors=True)
+
+
+
+def test_xq_resolves_its_target():
+    """The path may be left out, but never guessed at.
+
+    Typing the .xrayjs path on every question is what the tool exists to avoid, so
+    the first argument is optional -- and that only pays off if a caller can trust
+    which run answered. The ambiguous case is the one that matters: two runs in a
+    directory must produce a refusal, not the alphabetically first answer, because
+    a correct answer about the wrong file reads exactly like a correct answer.
+    """
+    print("xq target resolution")
+    if not os.path.isdir(SAMPLE_XRAYJS):
+        check("sample .xrayjs present for resolution", False, SAMPLE_XRAYJS)
+        return
+
+    # backward compatibility: an explicit directory still works, and stays silent
+    proc = run_xq(SAMPLE_XRAYJS, "summary")
+    check("explicit directory still answers",
+          proc.returncode == 0 and "functions 220" in proc.stdout, proc.stdout[:120])
+    check("explicit directory announces nothing", proc.stderr == "", proc.stderr[:120])
+
+    tmp = tempfile.mkdtemp(prefix="jsxray_target_")
+    try:
+        # one run, reached from the cwd with no path at all
+        solo = os.path.join(tmp, "solo")
+        os.makedirs(solo)
+        shutil.copytree(SAMPLE_XRAYJS, os.path.join(solo, "sentinel_sdk.xrayjs"))
+        proc = run_xq_in(solo, "summary")
+        check("subcommand alone resolves the only run in the cwd",
+              proc.returncode == 0 and "functions 220" in proc.stdout,
+              (proc.stdout[:120], proc.stderr[:120]))
+        check("the chosen run is named on stderr",
+              "sentinel_sdk.xrayjs" in proc.stderr, proc.stderr[:120])
+        check("stdout carries the answer only, so parsing still works",
+              "sentinel_sdk.xrayjs" not in proc.stdout.split("\n")[0],
+              proc.stdout[:120])
+
+        # --json must not gain a line either: the notice belongs on stderr
+        proc = run_xq_in(solo, "--json", "summary")
+        check("--json output stays valid JSON when the target was inferred",
+              json.loads(proc.stdout).get("summary", {}).get("functions") == 220,
+              proc.stdout[:120])
+        check("--json announces the run on stderr", "sentinel_sdk.xrayjs" in proc.stderr,
+              proc.stderr[:120])
+
+        # a .js path resolves to the run beside it
+        open(os.path.join(solo, "sentinel_sdk.js"), "w").close()
+        proc = run_xq_in(solo, "sentinel_sdk.js", "show", "on")
+        check("a .js path finds its paired .xrayjs",
+              proc.returncode == 0 and "fn197" in proc.stdout,
+              (proc.stdout[:120], proc.stderr[:120]))
+        check("the pairing is stated", "paired with sentinel_sdk.js" in proc.stderr,
+              proc.stderr[:120])
+
+        # an unanalysed .js is a different failure from a missing file, and says so
+        open(os.path.join(solo, "unrun.js"), "w").close()
+        proc = run_xq_in(solo, "unrun.js", "summary")
+        check("an unanalysed .js exits non-zero", proc.returncode != 0, proc.returncode)
+        check("an unanalysed .js says it was never analysed",
+              "has not been analysed" in proc.stderr and "unrun.xrayjs" in proc.stderr,
+              proc.stderr[:200])
+        check("an unanalysed .js points at the pipeline",
+              "xray.py" in proc.stderr, proc.stderr[:200])
+
+        # the case this exists for: two runs, no path, no guess
+        pair = os.path.join(tmp, "pair")
+        os.makedirs(pair)
+        for name in ("alpha.xrayjs", "beta.xrayjs"):
+            shutil.copytree(SAMPLE_XRAYJS, os.path.join(pair, name))
+        proc = run_xq_in(pair, "summary")
+        check("two candidates exit non-zero", proc.returncode != 0, proc.returncode)
+        check("two candidates are both listed",
+              "alpha.xrayjs" in proc.stderr and "beta.xrayjs" in proc.stderr,
+              proc.stderr[:200])
+        check("an ambiguous target answers nothing at all", proc.stdout == "",
+              proc.stdout[:200])
+        # and naming one resolves it
+        proc = run_xq_in(pair, "beta.xrayjs", "summary")
+        check("naming one of the candidates answers",
+              proc.returncode == 0 and "functions 220" in proc.stdout, proc.stdout[:120])
+
+        # no runs at all: say so, rather than reporting an empty analysis
+        bare = os.path.join(tmp, "bare")
+        os.makedirs(bare)
+        proc = run_xq_in(bare, "summary")
+        check("no run in the cwd exits non-zero", proc.returncode != 0, proc.returncode)
+        check("no run in the cwd says which directory it looked in",
+              ".xrayjs" in proc.stderr and bare in proc.stderr, proc.stderr[:200])
+
+        # the search is one level deep: a run nested below the cwd is not reached,
+        # so the cost of "xq summary" does not depend on the size of the tree
+        nested = os.path.join(tmp, "nested")
+        os.makedirs(os.path.join(nested, "deep"))
+        shutil.copytree(SAMPLE_XRAYJS, os.path.join(nested, "deep", "buried.xrayjs"))
+        proc = run_xq_in(nested, "summary")
+        check("the cwd search does not recurse", proc.returncode != 0
+              and "buried" not in proc.stdout, (proc.returncode, proc.stdout[:120]))
+
+        # a directory named after a subcommand: the path wins, and when that leaves
+        # no command to run, the collision is explained rather than reported as a
+        # missing argument
+        clash = os.path.join(tmp, "clash")
+        os.makedirs(clash)
+        shutil.copytree(SAMPLE_XRAYJS, os.path.join(clash, "summary"))
+        proc = run_xq_in(clash, "summary", "show", "on")
+        check("a run directory named like a subcommand is usable as a path",
+              proc.returncode == 0 and "fn197" in proc.stdout,
+              (proc.stdout[:120], proc.stderr[:200]))
+        proc = run_xq_in(clash, "summary")
+        check("the subcommand/path collision is explained",
+              proc.returncode != 0 and "both a subcommand and a run directory"
+              in proc.stderr, proc.stderr[:200])
+
+        # ...but an ordinary directory of that name must not shadow the subcommand
+        plain = os.path.join(tmp, "plain")
+        os.makedirs(os.path.join(plain, "port"))
+        shutil.copytree(SAMPLE_XRAYJS, os.path.join(plain, "only.xrayjs"))
+        proc = run_xq_in(plain, "port")
+        check("a non-run directory does not shadow a subcommand",
+              proc.returncode == 0 and "only.xrayjs" in proc.stderr
+              and "FNV-1a" in proc.stdout,
+              (proc.returncode, proc.stdout[:160], proc.stderr[:160]))
+
+        # a suggested follow-up command has to be runnable as written, which means
+        # echoing the form the caller used instead of the resolved path -- printing
+        # the long path teaches back the typing the resolution exists to remove
+        proc = run_xq_in(plain, "show", "nosuchfunction")
+        check("the retry hint keeps the short form when no path was given",
+              "Try: xq find nosuchfunction" in proc.stdout, proc.stdout[:200])
+        proc = run_xq_in(solo, "sentinel_sdk.js", "show", "nosuchfunction")
+        check("the retry hint echoes the .js path the caller used",
+              "Try: xq sentinel_sdk.js find" in proc.stdout, proc.stdout[:200])
+        proc = run_xq(SAMPLE_XRAYJS, "show", "nosuchfunction")
+        check("the retry hint still names an explicit directory",
+              ("Try: xq %s find" % SAMPLE_XRAYJS) in proc.stdout, proc.stdout[:200])
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+INSTALLER = os.path.join(ROOT, "scripts", "install-xq.sh")
+
+
+def test_install_xq_script():
+    """The installer is tested against a throwaway bin directory, never the user's.
+
+    Every invocation here passes --bin-dir into a mkdtemp, which is the only
+    reason a test suite may exercise an installer at all: a test that linked into
+    ~/.local/bin would rewrite the developer's own environment as a side effect of
+    running the suite. The dry run is checked for writing nothing, and the real
+    run for being safe to repeat.
+    """
+    print("install-xq")
+    if not os.path.isfile(INSTALLER):
+        check("installer present", False, INSTALLER)
+        return
+    source = os.path.join(SCRIPTS, "xq.py")
+    check("xq.py is executable, as the installer relies on",
+          os.access(source, os.X_OK), source)
+
+    tmp = tempfile.mkdtemp(prefix="jsxray_install_")
+
+    def install(bin_dir, *extra):
+        return subprocess.run(["sh", INSTALLER, "--bin-dir", bin_dir] + list(extra),
+                              capture_output=True, text=True, cwd=tmp)
+
+    try:
+        # --dry-run reports the link and creates nothing
+        dry = os.path.join(tmp, "dry")
+        proc = install(dry, "--dry-run")
+        check("dry run succeeds", proc.returncode == 0, proc.stderr[-200:])
+        check("dry run says what it would link",
+              "would link" in proc.stdout and "xq.py" in proc.stdout,
+              proc.stdout[-300:])
+        check("dry run writes nothing", not os.path.exists(dry), dry)
+
+        # the real thing links, and the link resolves to this checkout
+        live = os.path.join(tmp, "live")
+        proc = install(live)
+        link = os.path.join(live, "xq")
+        check("install succeeds", proc.returncode == 0, proc.stderr[-200:])
+        check("install creates a symlink", os.path.islink(link), link)
+        check("the link points at this checkout",
+              os.path.realpath(link) == os.path.realpath(source),
+              os.path.realpath(link))
+
+        # idempotent: a second run is a no-op, not an error and not a duplicate
+        proc = install(live)
+        check("a second install is a no-op", proc.returncode == 0
+              and "nothing to do" in proc.stdout, proc.stdout[-200:])
+        check("the link survives the second run",
+              os.path.realpath(link) == os.path.realpath(source),
+              os.path.realpath(link))
+
+        # a directory not on the PATH is called out, since the command would
+        # otherwise appear installed and still not run
+        check("an off-PATH target is a warning", "not on your PATH" in proc.stdout,
+              proc.stdout[-200:])
+        check("the warning says how to fix it", "PATH=" in proc.stdout,
+              proc.stdout[-200:])
+
+        # someone else's xq is left exactly as it was
+        foreign_dir = os.path.join(tmp, "foreign")
+        os.makedirs(foreign_dir)
+        foreign = os.path.join(foreign_dir, "xq")
+        os.symlink("/bin/echo", foreign)
+        proc = install(foreign_dir)
+        check("a foreign xq is not replaced", proc.returncode != 0, proc.returncode)
+        check("a foreign xq is still itself afterwards",
+              os.readlink(foreign) == "/bin/echo", os.readlink(foreign))
+        check("refusing to replace it is explained",
+              "Refusing to replace" in proc.stderr, proc.stderr[-200:])
+
+        # nor is a real file of that name
+        file_dir = os.path.join(tmp, "regular")
+        os.makedirs(file_dir)
+        with open(os.path.join(file_dir, "xq"), "w") as fh:
+            fh.write("#!/bin/sh\necho not ours\n")
+        proc = install(file_dir)
+        check("a regular file named xq is not replaced",
+              proc.returncode != 0 and "not a symlink" in proc.stderr,
+              proc.stderr[-200:])
+
+        # a stale link from another checkout of this same tool is ours to update
+        stale_dir = os.path.join(tmp, "stale")
+        old = os.path.join(tmp, "old", "skill", "scripts")
+        os.makedirs(stale_dir)
+        os.makedirs(old)
+        open(os.path.join(old, "xq.py"), "w").close()
+        os.symlink(os.path.join(old, "xq.py"), os.path.join(stale_dir, "xq"))
+        proc = install(stale_dir)
+        check("a stale js-xray link is repointed", proc.returncode == 0
+              and "repoint" in proc.stdout, (proc.returncode, proc.stdout[-200:]))
+        check("the repointed link is current",
+              os.path.realpath(os.path.join(stale_dir, "xq"))
+              == os.path.realpath(source),
+              os.path.realpath(os.path.join(stale_dir, "xq")))
+
+        # and the installed command actually answers through the link
+        run = os.path.join(tmp, "run")
+        install(run)
+        if os.path.isdir(SAMPLE_XRAYJS):
+            env = dict(os.environ, PATH=run + os.pathsep + os.environ.get("PATH", ""))
+            proc = subprocess.run(["xq", SAMPLE_XRAYJS, "summary"],
+                                  capture_output=True, text=True, env=env)
+            check("the installed xq answers as a bare command",
+                  proc.returncode == 0 and "functions 220" in proc.stdout,
+                  (proc.returncode, proc.stdout[:120], proc.stderr[:200]))
+
+        # nothing above went near the real user bin directory
+        real = os.path.join(os.path.expanduser("~"), ".local", "bin", "xq")
+        before = os.path.realpath(real) if os.path.lexists(real) else None
+        check("the suite never wrote to ~/.local/bin",
+              before is None or before == os.path.realpath(source), before)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
 def main():
     test_brace_matching()
     test_keyword_not_function()
@@ -475,11 +1390,24 @@ def main():
     test_scoped_string_arrays()
     test_inline_syntax_gate()
     test_pipeline_end_to_end()
+    test_default_outdir_naming()
     test_custom_anchors()
     test_graceful_on_plain_file()
     test_multiply_style()
     test_endpoint_and_storage_recovery()
     test_reachability_ignores_flow_budget()
+    test_pipeline_log_records_failure()
+    test_toon_stage()
+    test_vm_detection_positive()
+    test_vm_detection_no_false_positives()
+    test_vm_warning_reaches_outputs()
+    test_xq_subcommands()
+    test_xq_is_a_view_not_an_analysis()
+    test_xq_token_budget()
+    test_xq_fails_loudly()
+    test_xq_warns_on_vm_obfuscated()
+    test_xq_resolves_its_target()
+    test_install_xq_script()
     print("")
     print("passed %d, failed %d" % (len(PASS), len(FAIL)))
     for name, detail in FAIL:
