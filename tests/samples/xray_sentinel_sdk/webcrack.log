@@ -1,0 +1,21 @@
+2026-08-25T01:56:56.457Z webcrack:transforms prepare: started
+2026-08-25T01:56:56.473Z webcrack:transforms prepare: finished with 164 changes
+2026-08-25T01:56:56.473Z webcrack:transforms deobfuscate: started
+2026-08-25T01:56:56.489Z webcrack:deobfuscate String Array: o, length 8
+2026-08-25T01:56:56.489Z webcrack:deobfuscate String Array Rotate: no
+2026-08-25T01:56:56.490Z webcrack:deobfuscate String Array Decoders: c
+2026-08-25T01:56:56.490Z webcrack:transforms inline-object-props: started
+2026-08-25T01:56:56.499Z webcrack:transforms inline-object-props: finished with 0 changes
+2026-08-25T01:56:56.499Z webcrack:transforms inline-decoder-wrappers: started
+2026-08-25T01:56:56.506Z webcrack:transforms inline-decoder-wrappers: finished with 12 changes
+2026-08-25T01:56:56.508Z webcrack:transforms inline-decoded-strings: started
+2026-08-25T01:56:56.521Z webcrack:transforms inline-decoded-strings: finished with 10 changes
+2026-08-25T01:56:56.521Z webcrack:transforms merge-strings, dead-code, control-flow-object, control-flow-switch: started
+2026-08-25T01:56:56.525Z webcrack:transforms merge-strings, dead-code, control-flow-object, control-flow-switch: finished with 0 changes
+2026-08-25T01:56:56.525Z webcrack:transforms deobfuscate: finished with 25 changes
+2026-08-25T01:56:56.525Z webcrack:transforms transpile, unminify: started
+2026-08-25T01:56:56.541Z webcrack:transforms transpile, unminify: finished with 1146 changes
+2026-08-25T01:56:56.541Z webcrack:transforms self-defending, debug-protection, jsx, jsx-new: started
+2026-08-25T01:56:56.546Z webcrack:transforms self-defending, debug-protection, jsx, jsx-new: finished with 2 changes
+2026-08-25T01:56:56.546Z webcrack:transforms merge-object-assignments, evaluate-globals: started
+2026-08-25T01:56:56.555Z webcrack:transforms merge-object-assignments, evaluate-globals: finished with 0 changes

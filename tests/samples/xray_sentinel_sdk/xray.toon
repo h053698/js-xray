@@ -1,0 +1,1346 @@
+schema: js-xray/explanation/1
+source_file: /Users/yuchan/dev/yuchan/js-xray/tests/samples/xray_sentinel_sdk/clean.js
+size:
+  lines: 1352
+  bytes: 38348
+summary:
+  functions: 220
+  classes: 1
+  entry_points: 29
+  roles:
+    unclassified: 165
+    "lookup/decoder shim": 29
+    "encode/decode": 11
+    serialization: 10
+    "environment fingerprinting": 4
+    "validation/error path": 3
+    "bit mixing (unrecognised algorithm)": 2
+    "cryptography (platform)": 2
+    "hash/digest": 2
+    persistence: 2
+    "network transport": 1
+    "scheduling/retry": 1
+  endpoints[2]: "https://github.com/uuidjs/uuid#getrandomvalues-not-supported","https://chatgpt.com/backend-api/sentinel/"
+entry_points[29]:
+  - id: fn41
+    name: _.getEnforcementTokenSync
+    line: 172
+    why: public method of class _
+    traced: true
+  - id: fn39
+    name: _.initializeAndGatherData
+    line: 166
+    why: public method of class _
+    traced: true
+    shares_flow_with: _.getEnforcementTokenSync
+  - id: fn40
+    name: _.startEnforcement
+    line: 169
+    why: public method of class _
+    traced: true
+    shares_flow_with: _.getEnforcementTokenSync
+  - id: fn44
+    name: _.getRequirementsTokenBlocking
+    line: 192
+    why: public method of class _
+    traced: true
+  - id: fn178
+    name: t.setCookie
+    line: 959
+    why: function with no in-file caller
+    traced: true
+  - id: fn208
+    name: gn
+    line: 1193
+    why: function with no in-file caller
+    traced: true
+  - id: fn174
+    name: t.getCookies
+    line: 920
+    why: function with no in-file caller
+    traced: true
+  - id: fn156
+    name: Pt.serialize
+    line: 748
+    why: function with no in-file caller
+    traced: true
+  - id: fn143
+    name: getAugmentedNamespace
+    line: 649
+    why: function with no in-file caller
+    traced: false
+  - id: fn155
+    name: Pt.parse
+    line: 725
+    why: function with no in-file caller
+    traced: false
+  - id: fn175
+    name: t.getCookie
+    line: 944
+    why: function with no in-file caller
+    traced: false
+  - id: fn207
+    name: hn
+    line: 1181
+    why: function with no in-file caller
+    traced: false
+  - id: fn8
+    name: f
+    line: 32
+    why: function with no in-file caller
+    traced: false
+  - id: fn17
+    name: w
+    line: 66
+    why: function with no in-file caller
+    traced: false
+  - id: fn19
+    name: v
+    line: 76
+    why: function with no in-file caller
+    traced: false
+  - id: fn31
+    name: O
+    line: 132
+    why: function with no in-file caller
+    traced: false
+  - id: fn76
+    name: q
+    line: 383
+    why: function with no in-file caller
+    traced: false
+  - id: fn83
+    name: kt
+    line: 446
+    why: function with no in-file caller
+    traced: false
+  - id: fn149
+    name: It
+    line: 699
+    why: function with no in-file caller
+    traced: false
+  - id: fn160
+    name: zt
+    line: 830
+    why: function with no in-file caller
+    traced: false
+  - id: fn185
+    name: Vt
+    line: 1029
+    why: function with no in-file caller
+    traced: false
+  - id: fn66
+    name: R
+    line: 349
+    why: function with no in-file caller
+    traced: false
+  - id: fn147
+    name: getDefaultExportFromNamespaceIfNotNamed
+    line: 682
+    why: function with no in-file caller
+    traced: false
+  - id: fn148
+    name: getDefaultExportFromNamespaceIfPresent
+    line: 689
+    why: function with no in-file caller
+    traced: false
+  - id: fn180
+    name: t.setCookies
+    line: 1002
+    why: function with no in-file caller
+    traced: false
+  - id: fn181
+    name: t.deleteCookie
+    line: 1007
+    why: function with no in-file caller
+    traced: false
+  - id: fn182
+    name: t.removeCookies
+    line: 1012
+    why: function with no in-file caller
+    traced: false
+  - id: fn184
+    name: t.checkCookies
+    line: 1021
+    why: function with no in-file caller
+    traced: false
+  - id: fn183
+    name: t.hasCookie
+    line: 1017
+    why: function with no in-file caller
+    traced: false
+flows[6]:
+  - entry:
+      id: fn41
+      name: _.getEnforcementTokenSync
+      line: 172
+      why: public method of class _
+      traced: true
+    steps[22]:
+      - depth: 0
+        id: fn41
+        name: _.getEnforcementTokenSync
+        line: 172
+        reached_by: entry point
+        does: []
+      - depth: 1
+        id: fn45
+        name: _._getAnswer
+        line: 195
+        reached_by: calls this._getAnswer
+        does: []
+      - depth: 2
+        id: fn51
+        name: _._generateAnswerSync
+        line: 258
+        reached_by: calls this._generateAnswerSync
+        does: []
+      - depth: 3
+        id: fn56
+        name: _.getConfig
+        line: 316
+        reached_by: calls this.getConfig
+        does[1]: environment fingerprinting
+      - depth: 4
+        id: fn61
+        name: j
+        line: 321
+        reached_by: calls j
+        does[1]: lookup/decoder shim
+      - depth: 4
+        id: fn62
+        name: T
+        line: 325
+        reached_by: calls T
+        does: []
+      - depth: 4
+        id: fn57
+        name: _.getConfig > <callback@L318c173>
+        line: 318
+        reached_by: inline callback
+        does: []
+      - depth: 4
+        id: fn58
+        name: _.getConfig > <callback@L318c193>
+        line: 318
+        reached_by: inline callback
+        does: []
+      - depth: 4
+        id: fn59
+        name: _.getConfig > <callback@L318c243>
+        line: 318
+        reached_by: inline callback
+        does: []
+      - depth: 4
+        id: fn60
+        name: _.getConfig > <callback@L318c283>
+        line: 318
+        reached_by: inline callback
+        does: []
+      - depth: 3
+        id: fn48
+        name: _._runCheck
+        line: 230
+        reached_by: calls this._runCheck
+        does[1]: hash/digest
+      - depth: 4
+        id: fn49
+        name: _._runCheck > <iife@L235-248>
+        line: 235
+        reached_by: inline iife
+        does[1]: hash/digest
+        algorithms[2]: FNV-1a 32-bit,murmur3 fmix32
+      - depth: 5
+        id: fn144
+        name: t
+        line: 655
+        reached_by: calls t.charCodeAt
+        does: []
+      - depth: 4
+        id: fn63
+        name: E
+        line: 334
+        reached_by: calls E
+        does[2]: encode/decode,serialization
+      - depth: 4
+        id: fn1
+        name: s
+        line: 8
+        reached_by: calls s.substring
+        does: []
+      - depth: 4
+        id: fn2
+        name: s
+        line: 10
+        reached_by: calls s.substring
+        does: []
+      - depth: 3
+        id: fn50
+        name: _.buildGenerateFailMessage
+        line: 255
+        reached_by: calls this.buildGenerateFailMessage
+        does: []
+      - depth: 2
+        id: fn52
+        name: _._generateAnswerAsync
+        line: 274
+        reached_by: calls this._generateAnswerAsync
+        does: []
+      - depth: 3
+        id: fn53
+        name: _._generateAnswerAsync > <callback@L282-290>
+        line: 282
+        reached_by: inline callback
+        does: []
+      - depth: 4
+        id: fn54
+        name: _._generateAnswerAsync > <callback@L285-287>
+        line: 285
+        reached_by: inline callback
+        does: []
+      - depth: 2
+        id: fn46
+        name: _._getAnswer > <callback@L221-224>
+        line: 221
+        reached_by: inline callback
+        does: []
+      - depth: 2
+        id: fn47
+        name: _._getAnswer > <callback@L224-228>
+        line: 224
+        reached_by: inline callback
+        does: []
+    also_entered_by[2]{name,line,why}:
+      _.initializeAndGatherData,166,public method of class _
+      _.startEnforcement,169,public method of class _
+  - entry:
+      id: fn44
+      name: _.getRequirementsTokenBlocking
+      line: 192
+      why: public method of class _
+      traced: true
+    steps[10]:
+      - depth: 0
+        id: fn44
+        name: _.getRequirementsTokenBlocking
+        line: 192
+        reached_by: entry point
+        does: []
+      - depth: 1
+        id: fn55
+        name: _._generateRequirementsTokenAnswerBlocking
+        line: 302
+        reached_by: calls this._generateRequirementsTokenAnswerBlocking
+        does: []
+      - depth: 2
+        id: fn63
+        name: E
+        line: 334
+        reached_by: calls E
+        does[2]: encode/decode,serialization
+      - depth: 2
+        id: fn56
+        name: _.getConfig
+        line: 316
+        reached_by: calls this.getConfig
+        does[1]: environment fingerprinting
+      - depth: 3
+        id: fn61
+        name: j
+        line: 321
+        reached_by: calls j
+        does[1]: lookup/decoder shim
+      - depth: 3
+        id: fn62
+        name: T
+        line: 325
+        reached_by: calls T
+        does: []
+      - depth: 3
+        id: fn57
+        name: _.getConfig > <callback@L318c173>
+        line: 318
+        reached_by: inline callback
+        does: []
+      - depth: 3
+        id: fn58
+        name: _.getConfig > <callback@L318c193>
+        line: 318
+        reached_by: inline callback
+        does: []
+      - depth: 3
+        id: fn59
+        name: _.getConfig > <callback@L318c243>
+        line: 318
+        reached_by: inline callback
+        does: []
+      - depth: 3
+        id: fn60
+        name: _.getConfig > <callback@L318c283>
+        line: 318
+        reached_by: inline callback
+        does: []
+    also_entered_by: []
+  - entry:
+      id: fn178
+      name: t.setCookie
+      line: 959
+      why: function with no in-file caller
+      traced: true
+    steps[6]:
+      - depth: 0
+        id: fn178
+        name: t.setCookie
+        line: 959
+        reached_by: entry point
+        does[2]: persistence,lookup/decoder shim
+      - depth: 1
+        id: fn173
+        name: a
+        line: 904
+        reached_by: calls a
+        does[1]: serialization
+      - depth: 1
+        id: fn204
+        name: c
+        line: 1149
+        reached_by: calls c
+        does: []
+      - depth: 1
+        id: fn172
+        name: u
+        line: 901
+        reached_by: calls u
+        does: []
+      - depth: 1
+        id: fn179
+        name: t.setCookie > <callback@L995-998>
+        line: 995
+        reached_by: inline callback
+        does[1]: lookup/decoder shim
+      - depth: 2
+        id: fn144
+        name: t
+        line: 655
+        reached_by: calls t.concat
+        does: []
+    also_entered_by: []
+  - entry:
+      id: fn208
+      name: gn
+      line: 1193
+      why: function with no in-file caller
+      traced: true
+    steps[40]:
+      - depth: 0
+        id: fn208
+        name: gn
+        line: 1193
+        reached_by: entry point
+        does[1]: scheduling/retry
+      - depth: 1
+        id: fn103
+        name: jt
+        line: 528
+        reached_by: calls jt
+        does[3]: serialization,encode/decode,lookup/decoder shim
+      - depth: 2
+        id: fn104
+        name: jt > <callback@L529-628>
+        line: 529
+        reached_by: inline callback
+        does[3]: serialization,encode/decode,lookup/decoder shim
+      - depth: 3
+        id: fn105
+        name: jt > <iife@L531-624>
+        line: 531
+        reached_by: inline iife
+        does[3]: serialization,encode/decode,lookup/decoder shim
+      - depth: 4
+        id: fn127
+        name: jt > <callback@L594c19>
+        line: 594
+        reached_by: inline callback
+        does[1]: encode/decode
+      - depth: 4
+        id: fn128
+        name: jt > <callback@L595c19>
+        line: 595
+        reached_by: inline callback
+        does[1]: encode/decode
+      - depth: 4
+        id: fn125
+        name: jt > <callback@L592c19>
+        line: 592
+        reached_by: inline callback
+        does[1]: serialization
+      - depth: 4
+        id: fn126
+        name: jt > <callback@L593c19>
+        line: 593
+        reached_by: inline callback
+        does[1]: serialization
+      - depth: 4
+        id: fn135
+        name: jt > <callback@L611-620>
+        line: 611
+        reached_by: inline callback
+        does[1]: lookup/decoder shim
+      - depth: 5
+        id: fn88
+        name: Ct
+        line: 458
+        reached_by: calls Ct
+        does: []
+      - depth: 5
+        id: fn136
+        name: jt > <callback@L615-617>
+        line: 615
+        reached_by: inline callback
+        does: []
+      - depth: 5
+        id: fn137
+        name: jt > <callback@L617-619>
+        line: 617
+        reached_by: inline callback
+        does: []
+      - depth: 4
+        id: fn106
+        name: jt > <callback@L535c18>
+        line: 535
+        reached_by: inline callback
+        does: []
+      - depth: 5
+        id: fn141
+        name: Tt
+        line: 630
+        reached_by: calls Tt
+        does[1]: bit mixing (unrecognised algorithm)
+      - depth: 6
+        id: fn144
+        name: t
+        line: 655
+        reached_by: calls t.charCodeAt
+        does: []
+      - depth: 4
+        id: fn107
+        name: jt > <callback@L536c18>
+        line: 536
+        reached_by: inline callback
+        does: []
+      - depth: 4
+        id: fn108
+        name: jt > <callback@L537-545>
+        line: 537
+        reached_by: inline callback
+        does: []
+      - depth: 4
+        id: fn109
+        name: jt > <callback@L546-554>
+        line: 546
+        reached_by: inline callback
+        does: []
+      - depth: 4
+        id: fn110
+        name: jt > <callback@L555c19>
+        line: 555
+        reached_by: inline callback
+        does: []
+      - depth: 4
+        id: fn111
+        name: jt > <callback@L556-561>
+        line: 556
+        reached_by: inline callback
+        does: []
+      - depth: 4
+        id: fn112
+        name: jt > <callback@L562c18>
+        line: 562
+        reached_by: inline callback
+        does: []
+      - depth: 4
+        id: fn113
+        name: jt > <callback@L563c18>
+        line: 563
+        reached_by: inline callback
+        does: []
+      - depth: 4
+        id: fn114
+        name: jt > <callback@L563c50>
+        line: 563
+        reached_by: inline callback
+        does: []
+      - depth: 4
+        id: fn115
+        name: jt > <callback@L564-579>
+        line: 564
+        reached_by: inline callback
+        does: []
+      - depth: 5
+        id: fn165
+        name: r
+        line: 846
+        reached_by: calls r.map
+        does: []
+      - depth: 6
+        id: fn166
+        name: r > <anonymous@L847-853>
+        line: 847
+        reached_by: inline anonymous
+        does: []
+      - depth: 5
+        id: fn116
+        name: jt > <callback@L567c41>
+        line: 567
+        reached_by: inline callback
+        does: []
+      - depth: 5
+        id: fn117
+        name: jt > <callback@L569-571>
+        line: 569
+        reached_by: inline callback
+        does: []
+      - depth: 5
+        id: fn118
+        name: jt > <callback@L571-573>
+        line: 571
+        reached_by: inline callback
+        does: []
+      - depth: 4
+        id: fn119
+        name: jt > <callback@L580-587>
+        line: 580
+        reached_by: inline callback
+        does: []
+      - depth: 4
+        id: fn120
+        name: jt > <callback@L588c18>
+        line: 588
+        reached_by: inline callback
+        does: []
+      - depth: 4
+        id: fn121
+        name: jt > <callback@L590c18>
+        line: 590
+        reached_by: inline callback
+        does: []
+      - depth: 4
+        id: fn122
+        name: jt > <callback@L590c78>
+        line: 590
+        reached_by: inline callback
+        does: []
+      - depth: 4
+        id: fn123
+        name: jt > <callback@L590c116>
+        line: 590
+        reached_by: inline callback
+        does: []
+      - depth: 4
+        id: fn124
+        name: jt > <callback@L591c18>
+        line: 591
+        reached_by: inline callback
+        does: []
+      - depth: 4
+        id: fn129
+        name: jt > <callback@L596c19>
+        line: 596
+        reached_by: inline callback
+        does: []
+      - depth: 4
+        id: fn130
+        name: jt > <callback@L597c19>
+        line: 597
+        reached_by: inline callback
+        does: []
+      - depth: 4
+        id: fn131
+        name: jt > <callback@L598c19>
+        line: 598
+        reached_by: inline callback
+        does: []
+      - depth: 4
+        id: fn132
+        name: jt > <callback@L599c18>
+        line: 599
+        reached_by: inline callback
+        does: []
+      - depth: 4
+        id: fn133
+        name: jt > <callback@L600-610>
+        line: 600
+        reached_by: inline callback
+        does: []
+    also_entered_by: []
+  - entry:
+      id: fn174
+      name: t.getCookies
+      line: 920
+      why: function with no in-file caller
+      traced: true
+    steps[6]:
+      - depth: 0
+        id: fn174
+        name: t.getCookies
+        line: 920
+        reached_by: entry point
+        does[1]: persistence
+      - depth: 1
+        id: fn8
+        name: f
+        line: 32
+        reached_by: calls f.slice
+        does[1]: lookup/decoder shim
+      - depth: 2
+        id: fn1
+        name: s
+        line: 8
+        reached_by: calls s
+        does: []
+      - depth: 2
+        id: fn2
+        name: s
+        line: 10
+        reached_by: calls s
+        does: []
+      - depth: 1
+        id: fn9
+        name: f
+        line: 34
+        reached_by: calls f.slice
+        does[1]: lookup/decoder shim
+      - depth: 1
+        id: fn172
+        name: u
+        line: 901
+        reached_by: calls u
+        does: []
+    also_entered_by: []
+  - entry:
+      id: fn156
+      name: Pt.serialize
+      line: 748
+      why: function with no in-file caller
+      traced: true
+    steps[1]:
+      - depth: 0
+        id: fn156
+        name: Pt.serialize
+        line: 748
+        reached_by: entry point
+        does[1]: validation/error path
+    also_entered_by: []
+functions[25]:
+  - id: fn197
+    name: on
+    raw_name: on
+    kind: function
+    lines[2]: 1102,1126
+    params[2]: t,n
+    async: true
+    roles[1]:
+      - role: network transport
+        confidence: high
+        evidence[2]: performs fetch,"target Zt + \"req\""
+    calls[3]: fetch,rn,Date.now
+    reads[1]: Date.now
+    network[1]:
+      - kind: fetch
+        url: "Zt + \"req\""
+        method: POST
+        headers: []
+        body: "rn({ p: n }, t)"
+        credentials: include
+    algorithms: []
+    returns[1]: "rn({ e: o.message, p: n, a: r }, t)"
+    reachable_from_entry: true
+    importance: 80
+  - id: fn56
+    name: _.getConfig
+    raw_name: getConfig
+    kind: method
+    lines[2]: 316,319
+    params: []
+    async: false
+    roles[1]:
+      - role: environment fingerprinting
+        confidence: high
+        evidence[1]: "reads 10 browser properties: navigator.userAgent, document.scripts, document.documentElement.getAttribute, document.documentElement, navigator.language, navigator.languages, performance.now, location.search"
+    calls[8]: new Date,j,Array.from,document.documentElement.getAttribute,T,Object.keys,performance.now,new URLSearchParams
+    reads[12]: navigator.userAgent,Array.from,document.scripts,document.documentElement.getAttribute,document.documentElement,navigator.language,navigator.languages,Object.keys,performance.now,location.search,location,performance.timeOrigin
+    network: []
+    algorithms: []
+    returns[1]: "[screen?.width + screen?.height, \"\" + new Date(), performance?.memory?.jsHeapSizeLimit, Math?.random ..."
+    reachable_from_entry: true
+    importance: 69
+  - id: fn103
+    name: jt
+    raw_name: jt
+    kind: function
+    lines[2]: 528,629
+    params[1]: t
+    async: false
+    roles[3]:
+      - role: serialization
+        confidence: low
+        inherited_from: jt > <callback@L529-628>
+        evidence[1]: uses JSON.parse
+      - role: encode/decode
+        confidence: high
+        inherited_from: jt > <callback@L529-628>
+        evidence[1]: "base64 primitives: atob, base64-decode"
+      - role: lookup/decoder shim
+        confidence: low
+        inherited_from: jt > <callback@L529-628>
+        evidence[1]: "small indexed lookup: returns Ct()[\"catch\"](t => { vt.set(n, \"\" + t); })[\"finally\"](() => { vt.set(K, o); })"
+    calls[1]: At
+    reads: []
+    network: []
+    algorithms: []
+    returns: []
+    reachable_from_entry: true
+    importance: 69
+  - id: fn49
+    name: _._runCheck > <iife@L235-248>
+    raw_name: null
+    kind: iife
+    lines[2]: 235,248
+    params[1]: t
+    async: false
+    roles[1]:
+      - role: hash/digest
+        confidence: high
+        evidence[2]: "magic constants match FNV-1a 32-bit, murmur3 fmix32",loop over input
+    calls[2]: t.charCodeAt,Math.imul
+    reads[1]: Math.imul
+    network: []
+    algorithms[4]: FNV-1a 32-bit (offset basis),FNV-1a 32-bit (prime),murmur3 fmix32 (mix constant 1),murmur3 fmix32 (mix constant 2)
+    returns[1]: "(e >>> 0).toString(16).padStart(8, \"0\")"
+    reachable_from_entry: true
+    importance: 68
+  - id: fn63
+    name: E
+    raw_name: E
+    kind: function
+    lines[2]: 334,342
+    params[1]: t
+    async: false
+    roles[2]:
+      - role: encode/decode
+        confidence: high
+        evidence[1]: "base64 primitives: base64-encode, btoa"
+      - role: serialization
+        confidence: low
+        evidence[1]: uses JSON.stringify
+    calls[6]: JSON.stringify,btoa,String.fromCharCode,new TextEncoder,unescape,encodeURIComponent
+    reads[3]: JSON.stringify,TextEncoder,String.fromCharCode
+    network: []
+    algorithms: []
+    returns[2]: btoa(String.fromCharCode(...new TextEncoder().encode(t))),btoa(unescape(encodeURIComponent(t)))
+    reachable_from_entry: true
+    importance: 61
+  - id: fn104
+    name: jt > <callback@L529-628>
+    raw_name: null
+    kind: callback
+    lines[2]: 529,628
+    params: []
+    async: true
+    roles[3]:
+      - role: serialization
+        confidence: low
+        inherited_from: jt > <iife@L531-624>
+        evidence[1]: uses JSON.parse
+      - role: encode/decode
+        confidence: high
+        inherited_from: jt > <iife@L531-624>
+        evidence[1]: "base64 primitives: atob, base64-decode"
+      - role: lookup/decoder shim
+        confidence: low
+        inherited_from: jt > <iife@L531-624>
+        evidence[1]: "small indexed lookup: returns Ct()[\"catch\"](t => { vt.set(n, \"\" + t); })[\"finally\"](() => { vt.set(K, o); })"
+    calls[1]: vt.set
+    reads: []
+    network: []
+    algorithms: []
+    returns[1]: "null"
+    reachable_from_entry: true
+    importance: 60
+  - id: fn105
+    name: jt > <iife@L531-624>
+    raw_name: null
+    kind: iife
+    lines[2]: 531,624
+    params: []
+    async: false
+    roles[3]:
+      - role: serialization
+        confidence: low
+        inherited_from: jt > <callback@L592c19>
+        evidence[1]: uses JSON.parse
+      - role: encode/decode
+        confidence: high
+        inherited_from: jt > <callback@L594c19>
+        evidence[1]: "base64 primitives: atob, base64-decode"
+      - role: lookup/decoder shim
+        confidence: low
+        inherited_from: jt > <callback@L611-620>
+        evidence[1]: "small indexed lookup: returns Ct()[\"catch\"](t => { vt.set(n, \"\" + t); })[\"finally\"](() => { vt.set(K, o); })"
+    calls[2]: vt.clear,vt.set
+    reads: []
+    network: []
+    algorithms: []
+    returns: []
+    reachable_from_entry: true
+    importance: 60
+  - id: fn28
+    name: A
+    raw_name: A
+    kind: function
+    lines[2]: 106,129
+    params[3]: t,n,e
+    async: false
+    roles[3]:
+      - role: bit mixing (unrecognised algorithm)
+        confidence: low
+        evidence[1]: 32-bit operators & |
+      - role: cryptography (platform)
+        confidence: high
+        inherited_from: A > <iife@L111-120>
+        evidence[1]: calls crypto.getRandomValues
+      - role: lookup/decoder shim
+        confidence: low
+        inherited_from: A > <iife@L126-128>
+        evidence[1]: "small indexed lookup: returns (i[t[n + 0]] + i[t[n + 1]] + i[t[n + 2]] + i[t[n + 3]] + \"-\" + i[t[n + 4]] + i[t"
+    calls[2]: y.randomUUID,new Error
+    reads: []
+    network: []
+    algorithms: []
+    returns[2]: y.randomUUID(),"function (t, n = 0) { return (i[t[n + 0]] + i[t[n + 1]] + i[t[n + 2]] + i[t[n + 3]] + \"-\" + i[t[n +  ..."
+    reachable_from_entry: true
+    importance: 57
+  - id: fn178
+    name: t.setCookie
+    raw_name: t.setCookie
+    kind: assigned
+    lines[2]: 959,1001
+    params[3]: t,n,r
+    async: false
+    roles[2]:
+      - role: persistence
+        confidence: high
+        evidence[1]: "storage ops: document.cookie"
+      - role: lookup/decoder shim
+        confidence: low
+        inherited_from: t.setCookie > <callback@L995-998>
+        evidence[1]: "small indexed lookup: returns t.concat(\"\".concat(n[0], \"=\").concat(n[1], \";\"))"
+    calls[10]: c,a,i,u,l.getHeader,Array.isArray,String,l.setHeader,h.concat,Object.entries
+    reads[3]: document.cookie,Array.isArray,Object.entries
+    network: []
+    algorithms: []
+    returns: []
+    reachable_from_entry: true
+    importance: 56
+  - id: fn89
+    name: Ot
+    raw_name: Ot
+    kind: function
+    lines[2]: 469,521
+    params[1]: t
+    async: false
+    roles[2]:
+      - role: encode/decode
+        confidence: high
+        inherited_from: Ot > <callback@L470-520>
+        evidence[1]: "base64 primitives: atob, base64-decode, base64-encode, btoa"
+      - role: serialization
+        confidence: low
+        inherited_from: Ot > <callback@L470-520>
+        evidence[1]: uses JSON.parse
+    calls[1]: At
+    reads: []
+    network: []
+    algorithms: []
+    returns[1]: "At(() => new Promise((n, e) => { const r = kt; let o = false; setTimeout(() => { o = true; n(\"\" + bt ..."
+    reachable_from_entry: true
+    importance: 54
+  - id: fn91
+    name: Ot > <callback@L470-520>
+    raw_name: null
+    kind: callback
+    lines[2]: 470,520
+    params[2]: n,e
+    async: false
+    roles[2]:
+      - role: encode/decode
+        confidence: high
+        evidence[1]: "base64 primitives: atob, base64-decode, base64-encode, btoa"
+      - role: serialization
+        confidence: low
+        evidence[1]: uses JSON.parse
+    calls[9]: setTimeout,vt.set,JSON.parse,Tt,atob,vt.get,Ct,n,btoa
+    reads[1]: JSON.parse
+    network: []
+    algorithms: []
+    returns: []
+    reachable_from_entry: true
+    importance: 53
+  - id: fn48
+    name: _._runCheck
+    raw_name: _runCheck
+    kind: class-field
+    lines[2]: 230,254
+    params[5]: t,n,e,r,o
+    async: false
+    roles[1]:
+      - role: hash/digest
+        confidence: high
+        inherited_from: _._runCheck > <iife@L235-248>
+        evidence[2]: "magic constants match FNV-1a 32-bit, murmur3 fmix32",loop over input
+    calls[4]: Math.round,performance.now,E,s.substring
+    reads[2]: Math.round,performance.now
+    network: []
+    algorithms: []
+    returns[2]: "c + \"~S\"","null"
+    reachable_from_entry: true
+    importance: 52
+  - id: fn174
+    name: t.getCookies
+    raw_name: t.getCookies
+    kind: assigned
+    lines[2]: 920,943
+    params[1]: t
+    async: false
+    roles[1]:
+      - role: persistence
+        confidence: high
+        evidence[1]: "storage ops: document.cookie"
+    calls[4]: u,document.cookie.split,"i.[computed].split",f.slice
+    reads[2]: document.cookie,document.cookie.split
+    network: []
+    algorithms: []
+    returns[3]: n.cookies,"(0, s.parse)(n.headers.cookie)","{}"
+    reachable_from_entry: true
+    importance: 46
+  - id: fn29
+    name: A > <iife@L111-120>
+    raw_name: null
+    kind: iife
+    lines[2]: 111,120
+    params: []
+    async: false
+    roles[1]:
+      - role: cryptography (platform)
+        confidence: high
+        evidence[1]: calls crypto.getRandomValues
+    calls[3]: new Error,crypto.getRandomValues.bind,l
+    reads[2]: crypto.getRandomValues,crypto.getRandomValues.bind
+    network: []
+    algorithms: []
+    returns[1]: l(d)
+    reachable_from_entry: true
+    importance: 45
+  - id: fn93
+    name: Ot > <callback@L477-482>
+    raw_name: null
+    kind: callback
+    lines[2]: 477,482
+    params[1]: t
+    async: false
+    roles[1]:
+      - role: encode/decode
+        confidence: high
+        evidence[1]: "base64 primitives: base64-encode, btoa"
+    calls[2]: n,btoa
+    reads: []
+    network: []
+    algorithms: []
+    returns: []
+    reachable_from_entry: true
+    importance: 40
+  - id: fn94
+    name: Ot > <callback@L483-488>
+    raw_name: null
+    kind: callback
+    lines[2]: 483,488
+    params[1]: t
+    async: false
+    roles[1]:
+      - role: encode/decode
+        confidence: high
+        evidence[1]: "base64 primitives: base64-encode, btoa"
+    calls[2]: e,btoa
+    reads: []
+    network: []
+    algorithms: []
+    returns: []
+    reachable_from_entry: true
+    importance: 40
+  - id: fn100
+    name: Ot > <callback@L514-516>
+    raw_name: null
+    kind: callback
+    lines[2]: 514,516
+    params[1]: t
+    async: false
+    roles[1]:
+      - role: encode/decode
+        confidence: high
+        evidence[1]: "base64 primitives: base64-encode, btoa"
+    calls[2]: n,btoa
+    reads: []
+    network: []
+    algorithms: []
+    returns: []
+    reachable_from_entry: true
+    importance: 40
+  - id: fn127
+    name: jt > <callback@L594c19>
+    raw_name: null
+    kind: callback
+    lines[2]: 594,594
+    params[1]: n
+    async: false
+    roles[1]:
+      - role: encode/decode
+        confidence: high
+        evidence[1]: "base64 primitives: atob, base64-decode"
+    calls[3]: vt.set,atob,vt.get
+    reads: []
+    network: []
+    algorithms: []
+    returns: []
+    reachable_from_entry: true
+    importance: 40
+  - id: fn128
+    name: jt > <callback@L595c19>
+    raw_name: null
+    kind: callback
+    lines[2]: 595,595
+    params[1]: n
+    async: false
+    roles[1]:
+      - role: encode/decode
+        confidence: high
+        evidence[1]: "base64 primitives: base64-encode, btoa"
+    calls[3]: vt.set,btoa,vt.get
+    reads: []
+    network: []
+    algorithms: []
+    returns: []
+    reachable_from_entry: true
+    importance: 40
+  - id: fn0
+    name: <iife@L1-1352>
+    raw_name: null
+    kind: iife
+    lines[2]: 1,1352
+    params[1]: t
+    async: false
+    roles[1]:
+      - role: environment fingerprinting
+        confidence: medium
+        inherited_from: <iife@L1071-1082>
+        evidence[1]: "reads 3 browser properties: window.top, location.href, location"
+    calls[12]: i.push,u,a,new Uint8Array,h,g,crypto.randomUUID.bind,b,S,new Map,A,new _
+    reads[5]: crypto.randomUUID,crypto.randomUUID.bind,Promise.resolve,Object.freeze,window.addEventListener
+    network: []
+    algorithms: []
+    returns[1]: t
+    reachable_from_entry: true
+    importance: 36
+  - id: fn199
+    name: ln
+    raw_name: ln
+    kind: function
+    lines[2]: 1132,1139
+    params: []
+    async: false
+    roles[1]:
+      - role: environment fingerprinting
+        confidence: medium
+        evidence[1]: "reads 3 browser properties: document.createElement, document.body.appendChild, document.body"
+    calls[2]: document.createElement,document.body.appendChild
+    reads[3]: document.createElement,document.body.appendChild,document.body
+    network: []
+    algorithms: []
+    returns[1]: n
+    reachable_from_entry: true
+    importance: 30
+  - id: fn141
+    name: Tt
+    raw_name: Tt
+    kind: function
+    lines[2]: 630,637
+    params[2]: t,n
+    async: false
+    roles[1]:
+      - role: bit mixing (unrecognised algorithm)
+        confidence: medium
+        evidence[3]: 32-bit operators ^,"inside a loop, so it accumulates state",reads input as character codes
+    calls[3]: String.fromCharCode,t.charCodeAt,n.charCodeAt
+    reads[1]: String.fromCharCode
+    network: []
+    algorithms: []
+    returns[1]: r
+    reachable_from_entry: true
+    importance: 26
+  - id: fn193
+    name: <iife@L1071-1082>
+    raw_name: null
+    kind: iife
+    lines[2]: 1071,1082
+    params: []
+    async: false
+    roles[1]:
+      - role: environment fingerprinting
+        confidence: medium
+        evidence[1]: "reads 3 browser properties: window.top, location.href, location"
+    calls[1]: new URL
+    reads[3]: window.top,location.href,location
+    network: []
+    algorithms: []
+    returns[2]: "false",Kt.pathname === n.pathname
+    reachable_from_entry: true
+    importance: 25
+  - id: fn208
+    name: gn
+    raw_name: gn
+    kind: function
+    lines[2]: 1193,1239
+    params[1]: t
+    async: true
+    roles[1]:
+      - role: scheduling/retry
+        confidence: medium
+        evidence[1]: timer calls setTimeout with 4 await(s)
+    calls[9]: new Error,Date.now,x.getRequirementsToken,jt,pn,x.getEnforcementToken,rn,Ot,setTimeout
+    reads[1]: Date.now
+    network: []
+    algorithms: []
+    returns[1]: r
+    reachable_from_entry: true
+    importance: 24
+  - id: fn195
+    name: rn
+    raw_name: rn
+    kind: function
+    lines[2]: 1088,1101
+    params[2]: t,n
+    async: false
+    roles[1]:
+      - role: serialization
+        confidence: low
+        evidence[1]: uses JSON.stringify
+    calls[1]: JSON.stringify
+    reads[1]: JSON.stringify
+    network: []
+    algorithms: []
+    returns[1]: JSON.stringify(t)
+    reachable_from_entry: true
+    importance: 18
+classes[1]:
+  - name: _
+    superClass: null
+    start_line: 138
+    end_line: 320
+    methods[12]: initializeAndGatherData,startEnforcement,getEnforcementTokenSync,getEnforcementToken,getRequirementsToken,getRequirementsTokenBlocking,_getAnswer,buildGenerateFailMessage,_generateAnswerSync,_generateAnswerAsync,_generateRequirementsTokenAnswerBlocking,getConfig
+    getters: []
+    setters: []
+    fields[6]: answers,maxAttempts,requirementsSeed,sid,errorPrefix,_runCheck
+    static: []
+porting:
+  algorithms[1]:
+    - function: _._runCheck > <iife@L235-248>
+      id: fn49
+      lines[2]: 235,248
+      families[2]: FNV-1a 32-bit,murmur3 fmix32
+      constants[4]: 2166136261,16777619,2246822507,3266489909
+      operators[2]: ^=,>>>
+      returns[1]: "(e >>> 0).toString(16).padStart(8, \"0\")"
+      loops: 1
+      multiply_style: imul
+      multiply_note: "Math.imul(a, b) -- an exact 32-bit product. Port as (a * b) & 0xFFFFFFFF in Python, or uint32 multiply in Go/Rust."
+  network_contracts[1]:
+    - kind: fetch
+      url: "Zt + \"req\""
+      method: POST
+      headers: []
+      body: "rn({ p: n }, t)"
+      credentials: include
+      function: on
+      id: fn197
+      line: 1102
+  inputs[24]:
+    - property: document.body
+      read_by[1]: ln
+    - property: document.body.appendChild
+      read_by[1]: ln
+    - property: document.cookie
+      read_by[2]: t.getCookies,t.setCookie
+    - property: document.cookie.split
+      read_by[1]: t.getCookies
+    - property: document.createElement
+      read_by[1]: ln
+    - property: document.currentScript
+      read_by[1]: <iife@L1036-1069>
+    - property: document.documentElement
+      read_by[1]: _.getConfig
+    - property: document.documentElement.getAttribute
+      read_by[1]: _.getConfig
+    - property: document.scripts
+      read_by[2]: _.getConfig,jt > <callback@L590c18>
+    - property: location
+      read_by[2]: <iife@L1071-1082>,_.getConfig
+    - property: location.href
+      read_by[1]: <iife@L1071-1082>
+    - property: location.search
+      read_by[1]: _.getConfig
+    - property: "navigator.[computed]"
+      read_by[1]: T
+    - property: "navigator.[computed].toString"
+      read_by[1]: T
+    - property: navigator.language
+      read_by[1]: _.getConfig
+    - property: navigator.languages
+      read_by[1]: _.getConfig
+    - property: navigator.userAgent
+      read_by[1]: _.getConfig
+    - property: performance.now
+      read_by[4]: _._generateAnswerAsync,_._generateAnswerSync,_._generateRequirementsTokenAnswerBlocking,_._runCheck
+    - property: performance.timeOrigin
+      read_by[1]: _.getConfig
+    - property: window.__sentinel_init_pending
+      read_by[1]: <iife@L1328-1348>
+    - property: window.__sentinel_token_pending
+      read_by[1]: <iife@L1328-1348>
+    - property: window.addEventListener
+      read_by[2]: <iife@L1-1352>,<iife@L1295-1326>
+    - property: window.requestIdleCallback
+      read_by[1]: _._generateAnswerAsync > <callback@L282-290>
+    - property: window.top
+      read_by[1]: <iife@L1071-1082>
+  pitfalls[4]{issue,detail}:
+    32-bit integer semantics,JavaScript bitwise operators truncate to int32 and >>> yields uint32. In Python mask with & 0xFFFFFFFF after every step; in Go/Rust use uint32 types.
+    "32-bit multiply style: imul","Math.imul(a, b) -- an exact 32-bit product. Port as (a * b) & 0xFFFFFFFF in Python, or uint32 multiply in Go/Rust."
+    request shape is part of the contract,"Header order, credentials mode and exact body encoding are often validated server-side. Copy them from the contract rather than assuming defaults."
+    "environment values are inputs, not constants","The listed browser properties feed the algorithm. A port must supply plausible values with matching types and formatting, since they change the output."
+module:
+  exports: []
+  imports: []
+  global_assignments[2]{target,value}:
+    window.__sentinel_init_pending,"[]"
+    window.__sentinel_token_pending,"[]"
+literals:
+  urls[2]{url,line}:
+    "https://github.com/uuidjs/uuid#getrandomvalues-not-supported",115
+    "https://chatgpt.com/backend-api/sentinel/",1035
+  paths[2]: /sentinel/,/backend-api/sentinel/
+confidence_notes[3]: "Call edges are resolved by name, so a shadowed or reassigned identifier can point at the wrong function. Verify a flow against the source lines before relying on it.","Roles are inferred from AST facts listed under each role as evidence. Treat confidence \"low\" and \"none\" as a lead, not a finding.","Anonymous functions are attributed to the enclosing function by line containment, which is exact, but their call sites may be indirect."
+deobfuscation:
+  strings_inlined: 487
+  unresolved: 0
+  arrays: 18
+  decoders: 21
+  rolled_back: false

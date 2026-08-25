@@ -1,0 +1,484 @@
+{
+  "ok": true,
+  "node": "/Users/yuchan/.local/share/fnm/node-versions/v24.19.0/installation/bin/node",
+  "replaced": 487,
+  "rolled_back": false,
+  "node_version": "v24.19.0",
+  "arrays": 18,
+  "decoders": [
+    {
+      "name": "f",
+      "offset": 0,
+      "array_size": 8,
+      "alias_of": null
+    },
+    {
+      "name": "w",
+      "offset": 0,
+      "array_size": 7,
+      "alias_of": null
+    },
+    {
+      "name": "v",
+      "offset": 0,
+      "array_size": 11,
+      "alias_of": null
+    },
+    {
+      "name": "O",
+      "offset": 0,
+      "array_size": 64,
+      "alias_of": null
+    },
+    {
+      "name": "q",
+      "offset": 0,
+      "array_size": 6,
+      "alias_of": null
+    },
+    {
+      "name": "kt",
+      "offset": 0,
+      "array_size": 29,
+      "alias_of": null
+    },
+    {
+      "name": "It",
+      "offset": 0,
+      "array_size": 39,
+      "alias_of": null
+    },
+    {
+      "name": "zt",
+      "offset": 0,
+      "array_size": 47,
+      "alias_of": null
+    },
+    {
+      "name": "Vt",
+      "offset": 0,
+      "array_size": 49,
+      "alias_of": null
+    },
+    {
+      "name": "t",
+      "offset": 0,
+      "array_size": 8,
+      "alias_of": "f"
+    },
+    {
+      "name": "p",
+      "offset": 0,
+      "array_size": 7,
+      "alias_of": "w"
+    },
+    {
+      "name": "r",
+      "offset": 0,
+      "array_size": 11,
+      "alias_of": "v"
+    },
+    {
+      "name": "C",
+      "offset": 0,
+      "array_size": 64,
+      "alias_of": "O"
+    },
+    {
+      "name": "n",
+      "offset": 0,
+      "array_size": 64,
+      "alias_of": "C"
+    },
+    {
+      "name": "e",
+      "offset": 0,
+      "array_size": 64,
+      "alias_of": "C"
+    },
+    {
+      "name": "i",
+      "offset": 0,
+      "array_size": 64,
+      "alias_of": "C"
+    },
+    {
+      "name": "N",
+      "offset": 0,
+      "array_size": 29,
+      "alias_of": "kt"
+    },
+    {
+      "name": "o",
+      "offset": 0,
+      "array_size": 29,
+      "alias_of": "t"
+    },
+    {
+      "name": "qt",
+      "offset": 0,
+      "array_size": 39,
+      "alias_of": "It"
+    },
+    {
+      "name": "d",
+      "offset": 0,
+      "array_size": 47,
+      "alias_of": "e"
+    },
+    {
+      "name": "Ht",
+      "offset": 0,
+      "array_size": 49,
+      "alias_of": "Vt"
+    }
+  ],
+  "aliases": [
+    {
+      "alias": "t",
+      "of": "f"
+    },
+    {
+      "alias": "p",
+      "of": "w"
+    },
+    {
+      "alias": "t",
+      "of": "w"
+    },
+    {
+      "alias": "t",
+      "of": "v"
+    },
+    {
+      "alias": "r",
+      "of": "v"
+    },
+    {
+      "alias": "t",
+      "of": "f"
+    },
+    {
+      "alias": "C",
+      "of": "O"
+    },
+    {
+      "alias": "t",
+      "of": "C"
+    },
+    {
+      "alias": "t",
+      "of": "O"
+    },
+    {
+      "alias": "n",
+      "of": "C"
+    },
+    {
+      "alias": "e",
+      "of": "C"
+    },
+    {
+      "alias": "t",
+      "of": "C"
+    },
+    {
+      "alias": "e",
+      "of": "C"
+    },
+    {
+      "alias": "t",
+      "of": "e"
+    },
+    {
+      "alias": "n",
+      "of": "e"
+    },
+    {
+      "alias": "i",
+      "of": "C"
+    },
+    {
+      "alias": "n",
+      "of": "O"
+    },
+    {
+      "alias": "e",
+      "of": "C"
+    },
+    {
+      "alias": "e",
+      "of": "C"
+    },
+    {
+      "alias": "n",
+      "of": "O"
+    },
+    {
+      "alias": "t",
+      "of": "C"
+    },
+    {
+      "alias": "t",
+      "of": "C"
+    },
+    {
+      "alias": "n",
+      "of": "C"
+    },
+    {
+      "alias": "t",
+      "of": "C"
+    },
+    {
+      "alias": "n",
+      "of": "C"
+    },
+    {
+      "alias": "t",
+      "of": "q"
+    },
+    {
+      "alias": "N",
+      "of": "kt"
+    },
+    {
+      "alias": "t",
+      "of": "kt"
+    },
+    {
+      "alias": "n",
+      "of": "N"
+    },
+    {
+      "alias": "t",
+      "of": "N"
+    },
+    {
+      "alias": "r",
+      "of": "kt"
+    },
+    {
+      "alias": "e",
+      "of": "kt"
+    },
+    {
+      "alias": "n",
+      "of": "kt"
+    },
+    {
+      "alias": "t",
+      "of": "N"
+    },
+    {
+      "alias": "r",
+      "of": "t"
+    },
+    {
+      "alias": "r",
+      "of": "t"
+    },
+    {
+      "alias": "o",
+      "of": "t"
+    },
+    {
+      "alias": "o",
+      "of": "t"
+    },
+    {
+      "alias": "o",
+      "of": "t"
+    },
+    {
+      "alias": "r",
+      "of": "t"
+    },
+    {
+      "alias": "r",
+      "of": "t"
+    },
+    {
+      "alias": "e",
+      "of": "N"
+    },
+    {
+      "alias": "qt",
+      "of": "It"
+    },
+    {
+      "alias": "t",
+      "of": "It"
+    },
+    {
+      "alias": "e",
+      "of": "qt"
+    },
+    {
+      "alias": "r",
+      "of": "qt"
+    },
+    {
+      "alias": "e",
+      "of": "zt"
+    },
+    {
+      "alias": "t",
+      "of": "zt"
+    },
+    {
+      "alias": "t",
+      "of": "e"
+    },
+    {
+      "alias": "e",
+      "of": "zt"
+    },
+    {
+      "alias": "r",
+      "of": "e"
+    },
+    {
+      "alias": "n",
+      "of": "e"
+    },
+    {
+      "alias": "r",
+      "of": "e"
+    },
+    {
+      "alias": "n",
+      "of": "e"
+    },
+    {
+      "alias": "d",
+      "of": "e"
+    },
+    {
+      "alias": "e",
+      "of": "d"
+    },
+    {
+      "alias": "i",
+      "of": "e"
+    },
+    {
+      "alias": "o",
+      "of": "e"
+    },
+    {
+      "alias": "o",
+      "of": "e"
+    },
+    {
+      "alias": "o",
+      "of": "e"
+    },
+    {
+      "alias": "Ht",
+      "of": "Vt"
+    },
+    {
+      "alias": "t",
+      "of": "Ht"
+    },
+    {
+      "alias": "t",
+      "of": "Vt"
+    },
+    {
+      "alias": "t",
+      "of": "Ht"
+    },
+    {
+      "alias": "e",
+      "of": "Ht"
+    },
+    {
+      "alias": "t",
+      "of": "Ht"
+    },
+    {
+      "alias": "e",
+      "of": "Ht"
+    },
+    {
+      "alias": "t",
+      "of": "Ht"
+    },
+    {
+      "alias": "i",
+      "of": "Vt"
+    },
+    {
+      "alias": "i",
+      "of": "Vt"
+    },
+    {
+      "alias": "n",
+      "of": "Ht"
+    },
+    {
+      "alias": "n",
+      "of": "Ht"
+    },
+    {
+      "alias": "e",
+      "of": "n"
+    },
+    {
+      "alias": "n",
+      "of": "Ht"
+    },
+    {
+      "alias": "t",
+      "of": "Ht"
+    },
+    {
+      "alias": "e",
+      "of": "t"
+    },
+    {
+      "alias": "t",
+      "of": "Ht"
+    },
+    {
+      "alias": "r",
+      "of": "t"
+    },
+    {
+      "alias": "r",
+      "of": "t"
+    }
+  ],
+  "unresolved": 0,
+  "members_normalized": 402,
+  "per_decoder": {
+    "f": 1,
+    "t": 181,
+    "w": 1,
+    "p": 3,
+    "v": 1,
+    "r": 91,
+    "C": 19,
+    "O": 1,
+    "n": 43,
+    "e": 89,
+    "i": 10,
+    "q": 1,
+    "kt": 1,
+    "N": 1,
+    "o": 19,
+    "It": 1,
+    "qt": 2,
+    "zt": 1,
+    "d": 14,
+    "Ht": 6,
+    "Vt": 1
+  },
+  "valid": true,
+  "parse_error": null,
+  "node_check": "ok",
+  "in_bytes": 36820,
+  "out_bytes": 38348
+}

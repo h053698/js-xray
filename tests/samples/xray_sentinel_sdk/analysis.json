@@ -1,0 +1,614 @@
+{
+  "file": "/Users/yuchan/dev/yuchan/js-xray/tests/samples/xray_sentinel_sdk/clean.js",
+  "bytes": 38346,
+  "lines": 1352,
+  "anchor_hits": {
+    "fnv_offset_basis": {
+      "count": 1,
+      "hits": [
+        {
+          "line": 237,
+          "char": 6489,
+          "match": "2166136261",
+          "context": "t c = E(r); const s = function (t) { const n = O; let e = 2166136261; for (let r = 0; r < t.length; r++) { e ^= t.charCo"
+        }
+      ]
+    },
+    "fnv_prime": {
+      "count": 1,
+      "hits": [
+        {
+          "line": 240,
+          "char": 6605,
+          "match": "16777619",
+          "context": "r < t.length; r++) { e ^= t.charCodeAt(r); e = Math.imul(e, 16777619) >>> 0; } e ^= e >>> 16; e = Math.imul(e, 22468"
+        }
+      ]
+    },
+    "charcode_loop": {
+      "count": 3,
+      "hits": [
+        {
+          "line": 239,
+          "char": 6563,
+          "match": "charCodeAt(",
+          "context": "t e = 2166136261; for (let r = 0; r < t.length; r++) { e ^= t.charCodeAt(r); e = Math.imul(e, 16777619) >>> 0; } e ^"
+        },
+        {
+          "line": 634,
+          "char": 18424,
+          "match": "charCodeAt(",
+          "context": "= \"\"; for (let o = 0; o < t.length; o++) { r += String.fromCharCode(t.charCodeAt(o) ^ n.charCodeAt(o % n.length)); } return r; } var Et ="
+        },
+        {
+          "line": 634,
+          "char": 18442,
+          "match": "charCodeAt(",
+          "context": "o = 0; o < t.length; o++) { r += String.fromCharCode(t.charCodeAt(o) ^ n.charCodeAt(o % n.length)); } return r; } var Et = typeof globalThis"
+        }
+      ]
+    },
+    "xor_assign": {
+      "count": 4,
+      "hits": [
+        {
+          "line": 239,
+          "char": 6558,
+          "match": "^=",
+          "context": "let e = 2166136261; for (let r = 0; r < t.length; r++) { e ^= t.charCodeAt(r); e = Math.imul(e, 16777619) >>> 0; }"
+        },
+        {
+          "line": 242,
+          "char": 6642,
+          "match": "^=",
+          "context": ".charCodeAt(r); e = Math.imul(e, 16777619) >>> 0; } e ^= e >>> 16; e = Math.imul(e, 2246822507) >>> 0; e ^= e >>> 13;"
+        },
+        {
+          "line": 244,
+          "char": 6709,
+          "match": "^=",
+          "context": "} e ^= e >>> 16; e = Math.imul(e, 2246822507) >>> 0; e ^= e >>> 13; e = Math.imul(e, 3266489909) >>> 0; e ^= e >>> 16;"
+        },
+        {
+          "line": 246,
+          "char": 6776,
+          "match": "^=",
+          "context": "0; e ^= e >>> 13; e = Math.imul(e, 3266489909) >>> 0; e ^= e >>> 16; return (e >>> 0).toString(16).padStart(8, \"0\"); }(n +"
+        }
+      ]
+    },
+    "unsigned_shift": {
+      "count": 4,
+      "hits": [
+        {
+          "line": 240,
+          "char": 6615,
+          "match": ">>> 0",
+          "context": "th; r++) { e ^= t.charCodeAt(r); e = Math.imul(e, 16777619) >>> 0; } e ^= e >>> 16; e = Math.imul(e, 2246822507) >>>"
+        },
+        {
+          "line": 243,
+          "char": 6692,
+          "match": ">>> 0",
+          "context": "9) >>> 0; } e ^= e >>> 16; e = Math.imul(e, 2246822507) >>> 0; e ^= e >>> 13; e = Math.imul(e, 3266489909) >>> 0;"
+        },
+        {
+          "line": 245,
+          "char": 6759,
+          "match": ">>> 0",
+          "context": "2246822507) >>> 0; e ^= e >>> 13; e = Math.imul(e, 3266489909) >>> 0; e ^= e >>> 16; return (e >>> 0).toString(16).padStart(8,"
+        },
+        {
+          "line": 247,
+          "char": 6807,
+          "match": ">>> 0",
+          "context": "e = Math.imul(e, 3266489909) >>> 0; e ^= e >>> 16; return (e >>> 0).toString(16).padStart(8, \"0\"); }(n + c); if (s.substring(0, e"
+        }
+      ]
+    },
+    "fetch_call": {
+      "count": 1,
+      "hits": [
+        {
+          "line": 1106,
+          "char": 32105,
+          "match": "fetch(",
+          "context": "t e = Ht; for (let r = 0; r < 3; r++) { try { const r = await fetch(Zt + \"req\", { method: \"POST\", body: rn({ p"
+        }
+      ]
+    },
+    "json_stringify": {
+      "count": 4,
+      "hits": [
+        {
+          "line": 336,
+          "char": 9639,
+          "match": "JSON.stringify",
+          "context": "tch { return \"\" + n; } } function E(t) { const n = C; t = JSON.stringify(t); if (window.TextEncoder) { return btoa(String.fromCh"
+        },
+        {
+          "line": 593,
+          "char": 17077,
+          "match": "JSON.stringify",
+          "context": "vt.set(n, JSON.parse(\"\" + vt.get(e)))); vt.set(et, (n, e) => vt.set(n, JSON.stringify(vt.get(e)))); vt.set(it, n => vt.set(n, atob(\"\" + vt.get("
+        },
+        {
+          "line": 910,
+          "char": 26945,
+          "match": "JSON.stringify",
+          "context": "if (t === undefined) { t = \"\"; } try { var r = JSON.stringify(t); if (/^[\\{\\[]/.test(r)) { return r;"
+        },
+        {
+          "line": 1100,
+          "char": 31966,
+          "match": "JSON.stringify",
+          "context": "} else { return en(n); } }(); t.flow = n; return JSON.stringify(t); } async function on(t, n) { const e = Ht; for (le"
+        }
+      ]
+    },
+    "json_parse": {
+      "count": 2,
+      "hits": [
+        {
+          "line": 513,
+          "char": 14356,
+          "match": "JSON.parse",
+          "context": "vt.set(K, r); }); }); }); try { vt.set(K, JSON.parse(Tt(atob(t), \"\" + vt.get(rt)))); Ct()[\"catch\"](t => {"
+        },
+        {
+          "line": 592,
+          "char": 17008,
+          "match": "JSON.parse",
+          "context": "; vt.set(X, n => vt.set(n, vt)); vt.set(nt, (n, e) => vt.set(n, JSON.parse(\"\" + vt.get(e)))); vt.set(et, (n, e) => vt.set(n, JSON.string"
+        }
+      ]
+    },
+    "btoa_atob": {
+      "count": 9,
+      "hits": [
+        {
+          "line": 338,
+          "char": 9701,
+          "match": "btoa(",
+          "context": "st n = C; t = JSON.stringify(t); if (window.TextEncoder) { return btoa(String.fromCharCode(...new TextEncoder().encode(t))); } else { re"
+        },
+        {
+          "line": 340,
+          "char": 9786,
+          "match": "btoa(",
+          "context": "String.fromCharCode(...new TextEncoder().encode(t))); } else { return btoa(unescape(encodeURIComponent(t))); } } function U() { const t ="
+        },
+        {
+          "line": 480,
+          "char": 13546,
+          "match": "btoa(",
+          "context": "500); vt.set(J, t => { if (!o) { o = true; n(btoa(\"\" + t)); } }); vt.set(z, t => { if (!o) {"
+        },
+        {
+          "line": 486,
+          "char": 13654,
+          "match": "btoa(",
+          "context": "}); vt.set(z, t => { if (!o) { o = true; e(btoa(\"\" + t)); } }); vt.set(mt, (t, n, e, r) => { co"
+        },
+        {
+          "line": 513,
+          "char": 14370,
+          "match": "atob(",
+          "context": "}); }); }); try { vt.set(K, JSON.parse(Tt(atob(t), \"\" + vt.get(rt)))); Ct()[\"catch\"](t => { n(btoa(bt +"
+        },
+        {
+          "line": 515,
+          "char": 14440,
+          "match": "btoa(",
+          "context": ".parse(Tt(atob(t), \"\" + vt.get(rt)))); Ct()[\"catch\"](t => { n(btoa(bt + \": \" + t)); }); } catch (t) { n(btoa(bt + \": \" +"
+        },
+        {
+          "line": 518,
+          "char": 14504,
+          "match": "btoa(",
+          "context": "> { n(btoa(bt + \": \" + t)); }); } catch (t) { n(btoa(bt + \": \" + t)); } })); } function _t() { const t = [\"mat"
+        },
+        {
+          "line": 594,
+          "char": 17140,
+          "match": "atob(",
+          "context": "e) => vt.set(n, JSON.stringify(vt.get(e)))); vt.set(it, n => vt.set(n, atob(\"\" + vt.get(n)))); vt.set(ct, n => vt.set(n, btoa(\"\" + vt.get(n))))"
+        }
+      ]
+    },
+    "crypto_subtle": {
+      "count": 4,
+      "hits": [
+        {
+          "line": 9,
+          "char": 234,
+          "match": "getRandomValues",
+          "context": "ction s() { const t = [\"bind\", \"undefined\", \"apply\", \"search\", \"toString\", \"getRandomValues\", \"(((.+)+)+)+$\", \"constructor\"]; return (s = function () {"
+        },
+        {
+          "line": 114,
+          "char": 2920,
+          "match": "getRandomValues",
+          "context": "nst t = f; if (!l) { if (typeof crypto === \"undefined\" || !crypto.getRandomValues) { throw new Error(\"crypto.getRandomValues() not suppo"
+        },
+        {
+          "line": 115,
+          "char": 2973,
+          "match": "getRandomValues",
+          "context": "=== \"undefined\" || !crypto.getRandomValues) { throw new Error(\"crypto.getRandomValues() not supported. See https://github.com/uuidjs/uuid#getrandomval"
+        },
+        {
+          "line": 117,
+          "char": 3103,
+          "match": "getRandomValues",
+          "context": "b.com/uuidjs/uuid#getrandomvalues-not-supported\"); } l = crypto.getRandomValues.bind(crypto); } return l(d); }(); if (o.leng"
+        }
+      ]
+    },
+    "navigator_probe": {
+      "count": 3,
+      "hits": [
+        {
+          "line": 318,
+          "char": 8767,
+          "match": "navigator.userAgent",
+          "context": ".height, \"\" + new Date(), performance?.memory?.jsHeapSizeLimit, Math?.random(), navigator.userAgent, j(Array.from(document.scripts).map(n => n?.src).filter(t =>"
+        },
+        {
+          "line": 318,
+          "char": 9018,
+          "match": "navigator.language",
+          "context": "n?.length)[0] ?? [])[0] ?? document.documentElement.getAttribute(\"data-build\"), navigator.language, navigator.languages?.join(\",\"), Math?.random(), T(), j(Objec"
+        },
+        {
+          "line": 318,
+          "char": 9038,
+          "match": "navigator.language",
+          "context": "[0] ?? document.documentElement.getAttribute(\"data-build\"), navigator.language, navigator.languages?.join(\",\"), Math?.random(), T(), j(Object.keys(document)), j"
+        }
+      ]
+    },
+    "timing_probe": {
+      "count": 9,
+      "hits": [
+        {
+          "line": 233,
+          "char": 6375,
+          "match": "performance.now",
+          "context": "(t, n, e, r, o) => { const i = C; r[3] = o; r[9] = Math.round(performance.now() - t); const c = E(r); const s = function (t) {"
+        },
+        {
+          "line": 260,
+          "char": 7140,
+          "match": "performance.now",
+          "context": "\"e\")); } _generateAnswerSync(t, n) { const e = C; const r = performance.now(); try { const o = this.getConfig(); for ("
+        },
+        {
+          "line": 276,
+          "char": 7577,
+          "match": "performance.now",
+          "context": "} async _generateAnswerAsync(t, n) { const e = C; const r = performance.now(); try { let o = null; const i = this.getC"
+        },
+        {
+          "line": 305,
+          "char": 8374,
+          "match": "performance.now",
+          "context": "tsTokenAnswerBlocking() { const t = C; let n = \"e\"; const e = performance.now(); try { const n = this.getConfig(); n[3]"
+        },
+        {
+          "line": 309,
+          "char": 8474,
+          "match": "performance.now",
+          "context": "try { const n = this.getConfig(); n[3] = 1; n[9] = performance.now() - e; return E(n); } catch (t) { n = E(St"
+        },
+        {
+          "line": 318,
+          "char": 9141,
+          "match": "performance.now",
+          "context": "in(\",\"), Math?.random(), T(), j(Object.keys(document)), j(Object.keys(window)), performance.now(), this.sid, [...new URLSearchParams(window.location.search).key"
+        },
+        {
+          "line": 1113,
+          "char": 32284,
+          "match": "Date.now",
+          "context": ", credentials: \"include\" }).then(t => t.json()); nn = Date.now(); tn = r; return; } catch (o) { if (r >="
+        },
+        {
+          "line": 1198,
+          "char": 34723,
+          "match": "Date.now",
+          "context": "ror(\"token() should not be called from within an iframe.\"); } const e = Date.now(); if (!tn || e - nn > 540000) { const e = await x.getRequire"
+        }
+      ]
+    },
+    "cookie_access": {
+      "count": 3,
+      "hits": [
+        {
+          "line": 936,
+          "char": 27492,
+          "match": "document.cookie",
+          "context": "} else { return {}; } } var o = {}; var i = document.cookie ? document.cookie.split(\"; \") : []; for (var c = 0, a = i."
+        },
+        {
+          "line": 936,
+          "char": 27510,
+          "match": "document.cookie",
+          "context": "return {}; } } var o = {}; var i = document.cookie ? document.cookie.split(\"; \") : []; for (var c = 0, a = i.length; c < a; c++"
+        },
+        {
+          "line": 973,
+          "char": 28469,
+          "match": "document.cookie",
+          "context": "erialize)(t, a(n), i({ path: \"/\" }, o)); if (u()) { document.cookie = p; } else if (l && f) { var h = l.getHeader(\"Set"
+        }
+      ]
+    },
+    "token_prefix": {
+      "count": 5,
+      "hits": [
+        {
+          "line": 190,
+          "char": 5208,
+          "match": "gAAAAAC",
+          "context": ", this._generateAnswerAsync(this.requirementsSeed, \"0\")); } return \"gAAAAAC\" + (await this.answers.get(this.requirementsSeed)); } getRequire"
+        },
+        {
+          "line": 193,
+          "char": 5325,
+          "match": "gAAAAAC",
+          "context": "is.requirementsSeed)); } getRequirementsTokenBlocking() { return \"gAAAAAC\" + this._generateRequirementsTokenAnswerBlocking(); } _getAnswer"
+        },
+        {
+          "line": 197,
+          "char": 5458,
+          "match": "gAAAAAB",
+          "context": "ing(); } _getAnswer(t, n = false) { const e = C; const r = \"gAAAAAB\"; if (!t?.proofofwork?.required) { return null; }"
+        },
+        {
+          "line": 344,
+          "char": 10516,
+          "match": "gAAAAAB",
+          "context": "languages\", \"getEnforcementToken\", \"charCodeAt\", \"get\", \"hardwareConcurrency\", \"gAAAAAB\", \"height\", \"apply\", \"imul\", \"substring\", \"timeRemaining\", \"gAAAAAC\", \"j"
+        },
+        {
+          "line": 344,
+          "char": 10584,
+          "match": "gAAAAAC",
+          "context": "currency\", \"gAAAAAB\", \"height\", \"apply\", \"imul\", \"substring\", \"timeRemaining\", \"gAAAAAC\", \"join\", \"userAgent\", \"getAttribute\", \"errorPrefix\", \"search\", \"toStrin"
+        }
+      ]
+    },
+    "url_literal": {
+      "count": 3,
+      "hits": [
+        {
+          "line": 115,
+          "char": 3010,
+          "match": "https://github.com/uuidjs/uuid#getrandomvalues-not-supported",
+          "context": "alues) { throw new Error(\"crypto.getRandomValues() not supported. See https://github.com/uuidjs/uuid#getrandomvalues-not-supported\"); }"
+        },
+        {
+          "line": 1035,
+          "char": 30366,
+          "match": "https://chatgpt.com/backend-api/sentinel/",
+          "context": "(Vt = function (t, n) { return e[t -= 0]; })(t, n); } const Wt = \"https://chatgpt.com/backend-api/sentinel/\"; const Zt = function () { const"
+        },
+        {
+          "line": 1141,
+          "char": 33498,
+          "match": "https://chatgpt.com/backend-api/sentinel/",
+          "context": "called from within an iframe.\", \"has\", \"flow\", \"replace\", \"string\", \"origin\", \"https://chatgpt.com/backend-api/sentinel/\", \"search\"]; return (dn = function"
+        }
+      ]
+    }
+  },
+  "categories": {
+    "hashing/crypto": [
+      "btoa_atob",
+      "charcode_loop",
+      "crypto_subtle",
+      "fnv_offset_basis",
+      "fnv_prime",
+      "unsigned_shift",
+      "xor_assign"
+    ],
+    "network": [
+      "fetch_call",
+      "url_literal"
+    ],
+    "fingerprinting": [
+      "navigator_probe",
+      "timing_probe"
+    ],
+    "storage/identity": [
+      "cookie_access",
+      "token_prefix"
+    ],
+    "serialization": [
+      "json_parse",
+      "json_stringify"
+    ]
+  },
+  "key_blocks": [
+    {
+      "name": "_runCheck > (anonymous)",
+      "start_line": 235,
+      "end_line": 248,
+      "bytes": 415,
+      "labels": [
+        "charcode_loop",
+        "fnv_offset_basis",
+        "fnv_prime",
+        "unsigned_shift",
+        "xor_assign"
+      ],
+      "categories": [
+        "hashing/crypto"
+      ],
+      "code": "function (t) {\n        const n = O;\n        let e = 2166136261;\n        for (let r = 0; r < t.length; r++) {\n          e ^= t.charCodeAt(r);\n          e = Math.imul(e, 16777619) >>> 0;\n        }\n        e ^= e >>> 16;\n        e = Math.imul(e, 2246822507) >>> 0;\n        e ^= e >>> 13;\n        e = Math.imul(e, 3266489909) >>> 0;\n        e ^= e >>> 16;\n        return (e >>> 0).toString(16).padStart(8, \"0\");\n      }"
+    },
+    {
+      "name": "jt > (anonymous)",
+      "start_line": 531,
+      "end_line": 624,
+      "bytes": 3217,
+      "labels": [
+        "btoa_atob",
+        "json_parse",
+        "json_stringify"
+      ],
+      "categories": [
+        "hashing/crypto",
+        "serialization"
+      ],
+      "code": "function () {\n        const t = N;\n        vt.clear();\n        vt.set(L, Ot);\n        vt.set(F, (n, e) => vt.set(n, Tt(\"\" + vt.get(n), \"\" + vt.get(e))));\n        vt.set(G, (n, e) => vt.set(n, e));\n        vt.set(B, (n, e) => {\n          const r = t;\n          const o = vt.get(n);\n          if (Array.isArray(o)) {\n            o.push(vt.get(e));\n          } else {\n            vt.set(n, o + vt.get(e));\n          }\n        });\n        vt.set(pt, (n, e) => {\n          const r = t;\n          const o = vt.get(n);\n          if (Array.isArray(o)) {\n            o.splice(o.indexOf(vt.get(e)), 1);\n          } else {\n            vt.set(n, o - vt.get(e));\n          }\n        });\n        vt.set(gt, (n, e, r) => vt.set(n, vt.get(e) < vt.get(r)));\n        vt.set(wt, (n, e, r) => {\n          const o = t;\n          const i = Number(vt.get(e));\n          const c = Number(vt.get(r));\n          vt.set(n, i * c);\n        });\n        vt.set(H, (n, e, r) => vt.set(n, vt.get(e)[vt.get(r)]));\n        vt.set(W, (n, ...e) => vt.get(n)(...e.map(n => vt.get(n))));\n        vt.set(ot, (n, e, ...r) => {\n          const o = t;\n          try {\n            const t = vt.get(e)(...r.map(t => vt.get(t)));\n            if (t && typeof t.then === \"function\") {\n              return t.then(t => {\n                vt.set(n, t);\n              }).catch(t => {\n                vt.set(n, \"\" + t);\n              });\n            }\n            vt.set(n, t);\n          } catch (t) {\n            vt.set(n, \"\" + t);\n          }\n        });\n        vt.set(tt, (n, e, ...r) => {\n          const o = t;\n          try {\n            vt.get(e)(...r);\n          } catch (t) {\n            vt.set(n, \"\" + t);\n          }\n        });\n        vt.set(Z, (n, e) => vt.set(n, vt.get(e)));\n        vt.set(Q, window);\n        vt.set(Y, (n, e) => vt.set(n, (Array.from(document.scripts || []).map(n => n?.src?.match(vt.get(e))).filter(t => t?.length)[0] ?? [])[0] ?? null));\n        vt.set(X, n => vt.set(n, vt));\n        vt.set(nt, (n, e) => vt.set(n, JSON.parse(\"\" + vt.get(e))));\n        vt.set(et, (n, e) => vt.set(n, JSON.stringify(vt.get(e))));\n        vt.set(it, n => vt.set(n, atob(\"\" + vt.get(n))));\n        vt.set(ct, n => vt.set(n, btoa(\"\" + vt.get(n))));\n        vt.set(ut, (n, e, r, ...o) => vt.get(n) === vt.get(e) ? vt.get(r)(...o) : null);\n        vt.set(at, (n, e, r, o, ...i) => Math.abs(vt.get(n) - vt.get(e)) > vt.get(r) ? vt.get(o)(...i) : null);\n        vt.set(st, (n, e, ...r) => vt.get(n) !== undefined ? vt.get(e)(...r) : null);\n        vt.set(V, (n, e, r) => vt.set(n, vt.get(e)[vt.get(r)].bind(vt.get(e))));\n        vt.set(yt, (n, e) => {\n          const r = t;\n          try {\n            const t = vt.get(e);\n            return Promise.resolve(t).then(t => {\n              vt.set(n, t);\n            });\n          } catch (t) {\n            return;\n          }\n        });\n        vt.set(ft, (n, e) => {\n          const r = t;\n          const o = [...vt.get(K)];\n          vt.set(K, [...e]);\n          return Ct()[\"catch\"](t => {\n            vt.set(n, \"\" + t);\n          })[\"finally\"](() => {\n            vt.set(K, o);\n          });\n        });\n        vt.set(ht, () => {});\n        vt.set(dt, () => {});\n        vt.set(lt, () => {});\n      }"
+    },
+    {
+      "name": "E",
+      "start_line": 334,
+      "end_line": 343,
+      "bytes": 236,
+      "labels": [
+        "btoa_atob",
+        "json_stringify"
+      ],
+      "categories": [
+        "hashing/crypto",
+        "serialization"
+      ],
+      "code": "function E(t) {\n    const n = C;\n    t = JSON.stringify(t);\n    if (window.TextEncoder) {\n      return btoa(String.fromCharCode(...new TextEncoder().encode(t)));\n    } else {\n      return btoa(unescape(encodeURIComponent(t)));\n    }\n  }"
+    },
+    {
+      "name": "A > (anonymous)",
+      "start_line": 111,
+      "end_line": 120,
+      "bytes": 347,
+      "labels": [
+        "crypto_subtle",
+        "url_literal"
+      ],
+      "categories": [
+        "hashing/crypto",
+        "network"
+      ],
+      "code": "function () {\n      const t = f;\n      if (!l) {\n        if (typeof crypto === \"undefined\" || !crypto.getRandomValues) {\n          throw new Error(\"crypto.getRandomValues() not supported. See https://github.com/uuidjs/uuid#getrandomvalues-not-supported\");\n        }\n        l = crypto.getRandomValues.bind(crypto);\n      }\n      return l(d);\n    }"
+    },
+    {
+      "name": "on",
+      "start_line": 1102,
+      "end_line": 1127,
+      "bytes": 506,
+      "labels": [
+        "fetch_call",
+        "timing_probe"
+      ],
+      "categories": [
+        "fingerprinting",
+        "network"
+      ],
+      "code": "async function on(t, n) {\n    const e = Ht;\n    for (let r = 0; r < 3; r++) {\n      try {\n        const r = await fetch(Zt + \"req\", {\n          method: \"POST\",\n          body: rn({\n            p: n\n          }, t),\n          credentials: \"include\"\n        }).then(t => t.json());\n        nn = Date.now();\n        tn = r;\n        return;\n      } catch (o) {\n        if (r >= 2) {\n          return rn({\n            e: o.message,\n            p: n,\n            a: r\n          }, t);\n        }\n      }\n    }\n  }"
+    },
+    {
+      "name": "getConfig",
+      "start_line": 316,
+      "end_line": 320,
+      "bytes": 686,
+      "labels": [
+        "navigator_probe",
+        "timing_probe"
+      ],
+      "categories": [
+        "fingerprinting"
+      ],
+      "code": "    getConfig() {\n      const t = C;\n      return [screen?.width + screen?.height, \"\" + new Date(), performance?.memory?.jsHeapSizeLimit, Math?.random(), navigator.userAgent, j(Array.from(document.scripts).map(n => n?.src).filter(t => t)), (Array.from(document.scripts || []).map(n => n?.src?.match(\"c/[^/]*/_\")).filter(n => n?.length)[0] ?? [])[0] ?? document.documentElement.getAttribute(\"data-build\"), navigator.language, navigator.languages?.join(\",\"), Math?.random(), T(), j(Object.keys(document)), j(Object.keys(window)), performance.now(), this.sid, [...new URLSearchParams(window.location.search).keys()].join(\",\"), navigator?.hardwareConcurrency, performance.timeOrigin];\n    }"
+    },
+    {
+      "name": "Ot",
+      "start_line": 469,
+      "end_line": 522,
+      "bytes": 1253,
+      "labels": [
+        "btoa_atob",
+        "json_parse"
+      ],
+      "categories": [
+        "hashing/crypto",
+        "serialization"
+      ],
+      "code": "function Ot(t) {\n    return At(() => new Promise((n, e) => {\n      const r = kt;\n      let o = false;\n      setTimeout(() => {\n        o = true;\n        n(\"\" + bt);\n      }, 500);\n      vt.set(J, t => {\n        if (!o) {\n          o = true;\n          n(btoa(\"\" + t));\n        }\n      });\n      vt.set(z, t => {\n        if (!o) {\n          o = true;\n          e(btoa(\"\" + t));\n        }\n      });\n      vt.set(mt, (t, n, e, r) => {\n        const i = Array.isArray(r);\n        const c = i ? e : [];\n        const s = (i ? r : e) || [];\n        vt.set(t, (...t) => {\n          const e = kt;\n          if (o) {\n            return;\n          }\n          const r = [...vt.get(K)];\n          if (i) {\n            for (let n = 0; n < c.length; n++) {\n              const e = c[n];\n              const r = t[n];\n              vt.set(e, r);\n            }\n          }\n          vt.set(K, [...s]);\n          return Ct().then(() => vt.get(n))[\"catch\"](t => \"\" + t)[\"finally\"](() => {\n            vt.set(K, r);\n          });\n        });\n      });\n      try {\n        vt.set(K, JSON.parse(Tt(atob(t), \"\" + vt.get(rt))));\n        Ct()[\"catch\"](t => {\n          n(btoa(bt + \": \" + t));\n        });\n      } catch (t) {\n        n(btoa(bt + \": \" + t));\n      }\n    }));\n  }"
+    },
+    {
+      "name": "getRequirementsTokenBlocking",
+      "start_line": 192,
+      "end_line": 195,
+      "bytes": 116,
+      "labels": [
+        "token_prefix"
+      ],
+      "categories": [
+        "storage/identity"
+      ],
+      "code": "    getRequirementsTokenBlocking() {\n      return \"gAAAAAC\" + this._generateRequirementsTokenAnswerBlocking();\n    }"
+    },
+    {
+      "name": "s",
+      "start_line": 8,
+      "end_line": 14,
+      "bytes": 192,
+      "labels": [
+        "crypto_subtle"
+      ],
+      "categories": [
+        "hashing/crypto"
+      ],
+      "code": "function s() {\n    const t = [\"bind\", \"undefined\", \"apply\", \"search\", \"toString\", \"getRandomValues\", \"(((.+)+)+)+$\", \"constructor\"];\n    return (s = function () {\n      return t;\n    })();\n  }"
+    },
+    {
+      "name": "Tt",
+      "start_line": 630,
+      "end_line": 638,
+      "bytes": 195,
+      "labels": [
+        "charcode_loop"
+      ],
+      "categories": [
+        "hashing/crypto"
+      ],
+      "code": "function Tt(t, n) {\n    const e = N;\n    let r = \"\";\n    for (let o = 0; o < t.length; o++) {\n      r += String.fromCharCode(t.charCodeAt(o) ^ n.charCodeAt(o % n.length));\n    }\n    return r;\n  }"
+    },
+    {
+      "name": "rn",
+      "start_line": 1088,
+      "end_line": 1102,
+      "bytes": 285,
+      "labels": [
+        "json_stringify"
+      ],
+      "categories": [
+        "serialization"
+      ],
+      "code": "function rn(t, n) {\n    const e = Ht;\n    t.id = function () {\n      const t = Ht;\n      const n = xt.getCookies()[\"oai-did\"];\n      if (n === undefined) {\n        return undefined;\n      } else {\n        return en(n);\n      }\n    }();\n    t.flow = n;\n    return JSON.stringify(t);\n  }"
+    },
+    {
+      "name": "getRequirementsToken",
+      "start_line": 185,
+      "end_line": 192,
+      "bytes": 299,
+      "labels": [
+        "token_prefix"
+      ],
+      "categories": [
+        "storage/identity"
+      ],
+      "code": "    async getRequirementsToken() {\n      const t = C;\n      if (!this.answers.has(this.requirementsSeed)) {\n        this.answers.set(this.requirementsSeed, this._generateAnswerAsync(this.requirementsSeed, \"0\"));\n      }\n      return \"gAAAAAC\" + (await this.answers.get(this.requirementsSeed));\n    }"
+    }
+  ],
+  "endpoints": {
+    "urls": [
+      "https://chatgpt.com/backend-api/sentinel/",
+      "https://github.com/uuidjs/uuid#getrandomvalues-not-supported"
+    ],
+    "paths": []
+  }
+}

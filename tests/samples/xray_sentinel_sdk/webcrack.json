@@ -1,0 +1,23 @@
+{
+  "ok": true,
+  "node": "/Users/yuchan/.local/share/fnm/node-versions/v24.19.0/installation/bin/node",
+  "webcrack_cli": "/Users/yuchan/dev/yuchan/js-xray/node_modules/webcrack/dist/cli.js",
+  "node_version": "v24.19.0",
+  "string_array": "o, length 8",
+  "rotate": "no",
+  "decoders": "c",
+  "changes": {
+    "prepare": 164,
+    "inline-object-props": 0,
+    "inline-decoder-wrappers": 12,
+    "inline-decoded-strings": 10,
+    "merge-strings, dead-code, control-flow-object, control-flow-switch": 0,
+    "deobfuscate": 25,
+    "transpile, unminify": 1146,
+    "self-defending, debug-protection, jsx, jsx-new": 2,
+    "merge-object-assignments, evaluate-globals": 0
+  },
+  "deobfuscated": true,
+  "in_bytes": 23300,
+  "out_bytes": 36820
+}
