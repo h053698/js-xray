@@ -87,6 +87,49 @@ def port_snippet(family, style):
 
 CONF_MARK = {"high": "high", "medium": "medium", "low": "low", "none": "unknown"}
 
+# Heading and lead-in per VM verdict. This section is rendered before the summary
+# table, because a reader who skims the top of the report and stops has to have
+# seen it -- the rest of the document describes an interpreter, not the module.
+VM_BANNER = {
+    "vm-obfuscated": (
+        "## Do not trust the findings below: this file is VM-obfuscated",
+        "The original logic was compiled into a bytecode array, and what is left in "
+        "the source is the interpreter that executes it. Everything below -- flows, "
+        "key functions, reimplementation notes -- describes that interpreter: its "
+        "dispatch loop, its registers, its operand decoding. None of it is what this "
+        "module does.",
+        "The behaviour lives in the bytecode operands, which this pipeline does not "
+        "recover. Reading the sections below as the module's behaviour will produce a "
+        "confident and wrong description.",
+    ),
+    "suspected": (
+        "## Read with care: this file may be VM-obfuscated",
+        "Part of a bytecode-interpreter fingerprint is present, so some of the "
+        "functions below are likely interpreter internals rather than the module's "
+        "own logic.",
+        "Check the signals against the cited lines in the deobfuscated source before "
+        "relying on any flow that runs through the dispatch loop.",
+    ),
+}
+
+
+def render_vm_warning(vm):
+    """The banner for a VM verdict, with its evidence. Empty list when clean."""
+    banner = VM_BANNER.get((vm or {}).get("verdict"))
+    if not banner:
+        return []
+    heading, lead, tail = banner
+    out = [heading, "", lead, "", tail, ""]
+    signals = vm.get("signals") or []
+    if signals:
+        out.append("Signals detected (score %s/100):" % vm.get("score"))
+        out.append("")
+        for sig in signals:
+            where = " (line %s)" % sig["line"] if sig.get("line") else ""
+            out.append("- **%s**%s - %s" % (sig.get("kind"), where, sig.get("detail")))
+        out.append("")
+    return out
+
 
 def code(text, lang=""):
     return FENCE + lang + "\n" + text.rstrip("\n") + "\n" + FENCE
@@ -124,6 +167,8 @@ def render(data, args):
 
     L.append("# js-xray report")
     L.append("")
+    # Before the summary table: see VM_BANNER.
+    L.extend(render_vm_warning(data.get("vm_signals")))
     L.append("| | |")
     L.append("|---|---|")
     L.append("| source | " + BT + rel(args.source, base) + BT + " |")

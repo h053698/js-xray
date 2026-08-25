@@ -71,6 +71,338 @@ const ALGO_CONSTANTS = [
 
 const ALGO_BY_VALUE = new Map(ALGO_CONSTANTS.map((c) => [c.value, c]));
 
+// ---- JSVMP (JavaScript Virtual Machine Protect) interpreter fingerprint ----
+//
+// A VM-obfuscated file translates the original logic into a custom bytecode
+// array and ships an interpreter for it. Every function this extractor then
+// reports is a piece of that interpreter, so the analysis comes out structurally
+// sound and behaviourally useless: the thing a reader came for lives in the
+// bytecode, which is data. Detection only warns; recovering the bytecode is out
+// of scope.
+//
+// False positives cost more than misses here. A large single-line bundle and a
+// switch with many cases are both ordinary in minified code, and calling such a
+// file VM-obfuscated teaches a reader to distrust results that were fine. So a
+// verdict of "vm-obfuscated" needs the two signals specific to a bytecode
+// interpreter -- a bitmasked dispatch switch, and numeric jump targets written
+// back into the register that switch reads -- while size and density signals
+// only ever corroborate.
+
+// Interpreters dispatch on an opcode field masked out of a packed instruction
+// word, so the mask is a small all-ones-ish value. 3 (two bits) is the smallest
+// that could select an opcode at all; 0xFFFF is past any real opcode space, and
+// above it a "&" is far more likely to be ordinary 16/32-bit arithmetic.
+const VM_MASK_MIN = 3;
+const VM_MASK_MAX = 0xffff;
+
+// A real JSVMP dispatch carries dozens of opcodes. 12 sits well below the 40-80
+// seen in the wild and well above the 3-6 of a hand-written state machine, so it
+// separates the two without requiring the file to be large.
+const VM_MIN_CASES = 12;
+
+// Jump density: every opcode that continues execution has to write the next
+// program counter, so most case bodies contain such a write. Requiring 8 keeps
+// out a switch that merely assigns a couple of numeric flags.
+const VM_MIN_JUMP_CASES = 8;
+
+// Constant-table reads. Corroborating only, so the bar is set where ordinary
+// code does not reach it: 60 distinct numeric indices read off one base.
+const VM_MIN_TABLE_HITS = 60;
+
+// Bulk. JSVMP output is a large file collapsed onto very few lines. Both halves
+// are required: a 500KB pretty-printed library is not this, and neither is a 2KB
+// one-liner. The null-byte ratio is reported alongside to rule out a binary blob
+// read as text -- pure JS is effectively always 0%.
+const VM_BULK_BYTES = 200 * 1024;
+const VM_BULK_LINE_CHARS = 20000;
+const VM_NULL_BYTE_MAX_RATIO = 0.01;
+
+// Loop kinds that can host an interpreter's dispatch loop.
+const VM_LOOP_TYPES = new Set([
+  "WhileStatement", "DoWhileStatement", "ForStatement", "ForOfStatement", "ForInStatement",
+]);
+
+function isLowMask(node) {
+  return !!node && node.type === "NumericLiteral" && Number.isInteger(node.value) &&
+    node.value >= VM_MASK_MIN && node.value <= VM_MASK_MAX;
+}
+
+// The register a dispatch switch reads: switch (d[7] & 31) -> d[7].
+// Returns null when the discriminant is not a masked value, which is the case
+// for every ordinary switch, including control-flow-flattened ones.
+function dispatchRegister(disc) {
+  if (!disc || disc.type !== "BinaryExpression") return null;
+  if (disc.operator !== "&" && disc.operator !== "%") return null;
+  if (isLowMask(disc.right)) return { node: disc.left, mask: disc.right.value, op: disc.operator };
+  // a & b is commutative, so 31 & d[7] is the same dispatch written backwards
+  if (disc.operator === "&" && isLowMask(disc.left)) {
+    return { node: disc.right, mask: disc.left.value, op: disc.operator };
+  }
+  return null;
+}
+
+// A jump target is a constant address: 612, -1, or the two-way form
+// d[7] = d[k] ? 512 : 425 that a conditional branch compiles to.
+function isNumericJumpTarget(node) {
+  if (!node) return false;
+  if (node.type === "NumericLiteral") return true;
+  if (node.type === "UnaryExpression" && node.operator === "-") {
+    return isNumericJumpTarget(node.argument);
+  }
+  if (node.type === "ConditionalExpression") {
+    return isNumericJumpTarget(node.consequent) && isNumericJumpTarget(node.alternate);
+  }
+  return false;
+}
+
+// True when the program counter lives in an array slot -- d[7] rather than a
+// named variable. This is what separates a bytecode interpreter from
+// control-flow flattening, which keeps its state in a plain local and is a much
+// milder transform that leaves the real logic in the AST.
+function isRegisterSlot(node) {
+  return !!node && node.type === "MemberExpression" && node.computed &&
+    node.property && node.property.type === "NumericLiteral";
+}
+
+// The register file a slot belongs to: d[7] -> "d". Two slots of the same array
+// are the same machine's registers, which is how the fetch register and the
+// program counter get related to each other below.
+function registerFileOf(node) {
+  if (!isRegisterSlot(node)) return null;
+  return preview(node.object, 40);
+}
+
+// Is this assignment target part of the dispatched machine's state? Either the
+// exact value the switch reads (switch (pc & 31) ... pc = 612) or another slot of
+// the same register file (switch (d[6] & 31) ... d[7] = 612). Both spellings
+// appear in the wild, and requiring the first one only would miss half of them.
+function isMachineStateTarget(target, dispatchKey, registerFile) {
+  const key = preview(target, 60);
+  if (key && key === dispatchKey) return key;
+  if (!registerFile || !isRegisterSlot(target)) return null;
+  return registerFileOf(target) === registerFile ? key : null;
+}
+
+function enclosingLoopLine(path) {
+  let p = path.parentPath;
+  while (p) {
+    if (VM_LOOP_TYPES.has(p.node.type)) return p.node.loc ? p.node.loc.start.line : true;
+    // stop at a function boundary: a loop outside it does not drive this switch
+    if (/Function|Program/.test(p.node.type)) return null;
+    p = p.parentPath;
+  }
+  return null;
+}
+
+// Collect the VM signals present in a file and turn them into a verdict.
+// Reported under structure.json's "vm_signals" so explain.py can warn without
+// re-deriving any of it, and so a reader can audit the evidence.
+function detectVmSignals(ast, code) {
+  const signals = [];
+
+  // ---- dispatch loop: the switch a bytecode interpreter runs on ----
+  let best = null;
+  traverse(ast, {
+    SwitchStatement(path) {
+      const cases = (path.node.cases || []).length;
+      if (cases < VM_MIN_CASES) return;
+      if (enclosingLoopLine(path) === null) return;  // not a dispatch loop
+
+      const reg = dispatchRegister(path.node.discriminant);
+      const regNode = reg ? reg.node : path.node.discriminant;
+      const registerKey = preview(regNode, 60);
+      if (!registerKey) return;
+
+      // How many case bodies write a constant address into the machine's state.
+      // Counted per case, not per assignment: a case that writes the program
+      // counter three times is still one jump site, and counting writes would let
+      // one unrolled case body clear the threshold on its own.
+      const registerFile = registerFileOf(regNode);
+      let jumpCases = 0;
+      const jumpTargets = new Map();
+      for (const casePath of path.get("cases")) {
+        let found = null;
+        casePath.traverse({
+          AssignmentExpression(inner) {
+            if (found) return;
+            if (inner.node.operator !== "=") return;
+            if (!isNumericJumpTarget(inner.node.right)) return;
+            const key = isMachineStateTarget(inner.node.left, registerKey, registerFile);
+            if (key) found = key;
+          },
+        });
+        if (found) {
+          jumpCases += 1;
+          jumpTargets.set(found, (jumpTargets.get(found) || 0) + 1);
+        }
+      }
+      // The slot written by the most case bodies is the program counter; naming
+      // it in the evidence is what lets a reader find the dispatch by hand.
+      let programCounter = registerKey;
+      let pcWrites = 0;
+      for (const [key, count] of jumpTargets) {
+        if (count > pcWrites) { programCounter = key; pcWrites = count; }
+      }
+
+      const candidate = {
+        cases,
+        jumpCases,
+        masked: !!reg,
+        mask: reg ? reg.mask : null,
+        maskOp: reg ? reg.op : null,
+        registerKey,
+        programCounter,
+        registerIsSlot: isRegisterSlot(regNode),
+        line: path.node.loc ? path.node.loc.start.line : null,
+        span: (path.node.end || 0) - (path.node.start || 0),
+      };
+      // Keep the strongest candidate: a masked dispatch beats an unmasked one,
+      // then more jump targets, then more opcodes.
+      if (!best) {
+        best = candidate;
+      } else {
+        const a = [candidate.masked ? 1 : 0, candidate.jumpCases, candidate.cases];
+        const b = [best.masked ? 1 : 0, best.jumpCases, best.cases];
+        for (let i = 0; i < a.length; i++) {
+          if (a[i] !== b[i]) {
+            if (a[i] > b[i]) best = candidate;
+            break;
+          }
+        }
+      }
+    },
+  });
+
+  if (best && best.masked) {
+    signals.push({
+      kind: "masked-switch-dispatch",
+      detail: "switch on (" + best.registerKey + " " + best.maskOp + " " + best.mask +
+        ") with " + best.cases + " cases, inside a loop",
+      line: best.line,
+    });
+  } else if (best) {
+    // An unmasked loop-switch is also what control-flow flattening looks like,
+    // so it is recorded but never enough on its own.
+    signals.push({
+      kind: "loop-switch-dispatch",
+      detail: "switch on " + best.registerKey + " with " + best.cases +
+        " cases, inside a loop, discriminant not bitmasked",
+      line: best.line,
+    });
+  }
+  if (best && best.jumpCases >= VM_MIN_JUMP_CASES) {
+    signals.push({
+      kind: "dense-numeric-jumps",
+      detail: best.programCounter + " assigned a constant address in " + best.jumpCases +
+        " of " + best.cases + " case bodies",
+      line: best.line,
+    });
+  }
+  if (best && best.registerIsSlot) {
+    signals.push({
+      kind: "array-slot-program-counter",
+      detail: "the dispatched value is the array slot " + best.registerKey +
+        ", not a named variable",
+      line: best.line,
+    });
+  }
+
+  // ---- numeric constant table: C[9][667] style reads off one base ----
+  const tableHits = new Map();
+  traverse(ast, {
+    MemberExpression(path) {
+      const n = path.node;
+      if (!n.computed || !n.property || n.property.type !== "NumericLiteral") return;
+      const base = preview(n.object, 40);
+      if (!base || base.length > 40) return;
+      if (!tableHits.has(base)) {
+        if (tableHits.size >= 500) return;  // bounded: this runs on 500KB inputs
+        tableHits.set(base, new Set());
+      }
+      const seen = tableHits.get(base);
+      if (seen.size < 5000) seen.add(n.property.value);
+    },
+  });
+  let table = null;
+  for (const [base, seen] of tableHits) {
+    if (!table || seen.size > table.count) table = { base, count: seen.size };
+  }
+  if (table && table.count >= VM_MIN_TABLE_HITS) {
+    signals.push({
+      kind: "numeric-constant-table",
+      detail: table.base + "[N] read at " + table.count + " distinct numeric indices",
+      line: null,
+    });
+  }
+
+  // ---- text statistics: bulk collapsed onto very few lines ----
+  // Byte counts, line lengths and the null-byte ratio are text facts, so they
+  // are measured on the text instead of inferred from the AST.
+  const bytes = Buffer.byteLength(code, "utf8");
+  const lineList = code.split("\n");
+  let maxLine = 0;
+  for (const ln of lineList) if (ln.length > maxLine) maxLine = ln.length;
+  const nullBytes = code.split("\u0000").length - 1;
+  const nullRatio = bytes ? nullBytes / bytes : 0;
+  if (bytes >= VM_BULK_BYTES && maxLine >= VM_BULK_LINE_CHARS &&
+      nullRatio < VM_NULL_BYTE_MAX_RATIO) {
+    signals.push({
+      kind: "single-line-bulk",
+      detail: (bytes / 1024).toFixed(0) + "KB over " + lineList.length +
+        " line(s), longest " + maxLine + " chars, " +
+        (nullRatio * 100).toFixed(1) + "% null bytes",
+      line: null,
+    });
+  }
+
+  // ---- one switch accounting for most of the file ----
+  if (best && bytes && best.span / bytes >= 0.3) {
+    signals.push({
+      kind: "dispatch-dominates-file",
+      detail: "the dispatch switch spans " + ((best.span / bytes) * 100).toFixed(0) +
+        "% of the file",
+      line: best.line,
+    });
+  }
+
+  const kinds = new Set(signals.map((s) => s.kind));
+  const hasMaskedDispatch = kinds.has("masked-switch-dispatch");
+  const hasJumps = kinds.has("dense-numeric-jumps");
+  const hasSlotPc = kinds.has("array-slot-program-counter");
+
+  // Weights, not a probability: they exist so a reader can tell a two-signal
+  // verdict from a five-signal one. The two core signals alone reach 70.
+  const WEIGHT = {
+    "masked-switch-dispatch": 40,
+    "dense-numeric-jumps": 30,
+    "array-slot-program-counter": 10,
+    "numeric-constant-table": 10,
+    "loop-switch-dispatch": 5,
+    "single-line-bulk": 5,
+    "dispatch-dominates-file": 5,
+  };
+  let score = 0;
+  for (const kind of kinds) score += WEIGHT[kind] || 0;
+  if (score > 100) score = 100;
+
+  let verdict = "none";
+  if (hasMaskedDispatch && hasJumps) {
+    // Both halves of the interpreter fingerprint. Ordinary minified output does
+    // not mask a dispatch value and then write constant addresses back into it
+    // from most of its case bodies.
+    verdict = "vm-obfuscated";
+  } else if (hasMaskedDispatch) {
+    verdict = "suspected";
+  } else if (hasJumps && hasSlotPc) {
+    // No mask, but the program counter is an array slot fed constant addresses.
+    // Consistent with a VM that unpacks its opcode field elsewhere, and also
+    // with an unusual generated state machine -- so it stays at suspected.
+    verdict = "suspected";
+  }
+
+  return { verdict, score, signals };
+}
+
 // True when a multiplication feeds directly into a 32-bit coercion, meaning the
 // product was computed in float64 first. Only the immediate parent counts: an
 // extra layer of arithmetic in between changes the rounding story anyway.
@@ -670,6 +1002,10 @@ export function extractStructure(code) {
       global_assignments: globalAssigns.slice(0, 40),
     },
     literals: { urls: [...urls.values()], paths: [...paths] },
+    // Whether the functions above describe the module's own logic at all, or
+    // only a bytecode interpreter standing in front of it. Everything else in
+    // this file is worthless if the verdict here is "vm-obfuscated".
+    vm_signals: detectVmSignals(ast, code),
   };
 }
 
@@ -694,6 +1030,7 @@ function cli() {
     classes: data.classes.length,
     edges: data.call_graph.edges.length,
     urls: data.literals.urls.length,
+    vm: data.vm_signals.verdict,
   }) + "\n");
 }
 

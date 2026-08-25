@@ -31,6 +31,40 @@ MAX_FLOW_DEPTH = 6
 MAX_FLOW_NODES = 40
 MAX_TRACED_ENTRIES = 8
 
+# What to say when the file turns out to be a bytecode interpreter rather than
+# the logic a reader came for. Everything else this module produces is derived
+# from the interpreter's own AST, so the warning has to come before it, in the
+# same voice as the other notes: what is wrong, and what not to trust.
+VM_WARNING = {
+    "vm-obfuscated": (
+        "This file is VM-obfuscated (JSVMP): the original logic was compiled to a "
+        "bytecode array and what remains in the AST is the interpreter that runs it. "
+        "Every function below is an interpreter part -- dispatch, registers, operand "
+        "decoding -- so flows, functions and porting describe the virtual machine, "
+        "not the module's behaviour. Do not report them as what this code does. The "
+        "behaviour is in the bytecode operands, which this pipeline does not "
+        "recover; see summary.vm_obfuscation and vm_signals for the evidence."
+    ),
+    "suspected": (
+        "This file shows part of a VM-obfuscation (JSVMP) fingerprint: some of the "
+        "extracted functions are probably a bytecode interpreter rather than the "
+        "module's own logic. Check vm_signals against clean.js before trusting any "
+        "flow or porting note that passes through the dispatch loop cited there."
+    ),
+}
+
+
+def vm_note(vm_signals):
+    """The confidence note for a VM verdict, or None when there is nothing to say.
+
+    An unknown verdict (structure extraction degraded, so nothing was examined)
+    gets no note: the degradation is already reported through "error", and adding
+    a VM caveat there would invent a suspicion nothing supports.
+    """
+    verdict = (vm_signals or {}).get("verdict")
+    return VM_WARNING.get(verdict)
+
+
 # Bitwise work on 32-bit lanes is the signature of a hand-rolled hash or cipher,
 # and it is also the number one source of porting bugs in other languages.
 BITWISE = {"^", "&", "|", "<<", ">>", ">>>", "^=", "&=", "|=", "<<=", ">>=", ">>>="}
@@ -720,6 +754,22 @@ def explain(structure, inline_meta=None, top=25):
 
     unreached = [display_name(f, by_id) for f in fns if f["id"] not in reached]
 
+    vm_signals = structure.get("vm_signals") or {"verdict": "unknown", "score": 0, "signals": []}
+    notes = [
+        "Call edges are resolved by name, so a shadowed or reassigned identifier "
+        "can point at the wrong function. Verify a flow against the source lines "
+        "before relying on it.",
+        "Roles are inferred from AST facts listed under each role as evidence. "
+        "Treat confidence \"low\" and \"none\" as a lead, not a finding.",
+        "Anonymous functions are attributed to the enclosing function by line "
+        "containment, which is exact, but their call sites may be indirect.",
+    ]
+    # A VM verdict invalidates every other note rather than qualifying it, so it
+    # goes first: a reader who stops after one line has to have read this one.
+    note = vm_note(vm_signals)
+    if note:
+        notes.insert(0, note)
+
     out = {
         "schema": "js-xray/explanation/1",
         "source_file": structure.get("source_file"),
@@ -728,6 +778,9 @@ def explain(structure, inline_meta=None, top=25):
             "functions": len(fns),
             "classes": len(structure.get("classes", []) or []),
             "entry_points": len(entries),
+            # Machine-readable verdict, so an agent can bail out on this field
+            # alone instead of parsing the prose in confidence_notes.
+            "vm_obfuscation": vm_signals.get("verdict"),
             "roles": dict(sorted(role_counts.items(), key=lambda kv: -kv[1])),
             "endpoints": [u.get("url") if isinstance(u, dict) else u
                           for u in (structure.get("literals", {}) or {}).get("urls", [])],
@@ -739,15 +792,10 @@ def explain(structure, inline_meta=None, top=25):
         "porting": porting_spec(structure, by_id, roles_by_id),
         "module": structure.get("module", {}),
         "literals": structure.get("literals", {}),
-        "confidence_notes": [
-            "Call edges are resolved by name, so a shadowed or reassigned identifier "
-            "can point at the wrong function. Verify a flow against the source lines "
-            "before relying on it.",
-            "Roles are inferred from AST facts listed under each role as evidence. "
-            "Treat confidence \"low\" and \"none\" as a lead, not a finding.",
-            "Anonymous functions are attributed to the enclosing function by line "
-            "containment, which is exact, but their call sites may be indirect.",
-        ],
+        # Carried through verbatim: the verdict is an interpretation, so the facts
+        # it rests on travel with it for a reader to check.
+        "vm_signals": vm_signals,
+        "confidence_notes": notes,
     }
     if inline_meta:
         out["deobfuscation"] = {
@@ -787,6 +835,12 @@ def main():
     print("%d functions, %d entry points, %d flows, %d algorithms, %d network contracts" % (
         s["functions"], s["entry_points"], len(data["flows"]),
         len(data["porting"]["algorithms"]), len(data["porting"]["network_contracts"])))
+    if s.get("vm_obfuscation") not in ("none", "unknown", None):
+        # Loud on stderr as well as in the file: a run whose output does not
+        # describe the module must not look like an ordinary success.
+        sys.stderr.write("WARNING: VM obfuscation %s (score %s) -- the extracted "
+                         "functions are interpreter internals, not module logic\n" % (
+                             s["vm_obfuscation"], data["vm_signals"].get("score")))
     return 0
 
 
