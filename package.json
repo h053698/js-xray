@@ -9,12 +9,15 @@
   },
   "scripts": {
     "webcrack": "webcrack",
-    "xray": "python3 skill/scripts/xray.py"
+    "xray": "python3 skill/scripts/xray.py",
+    "xq": "python3 skill/scripts/xq.py",
+    "install-xq": "sh scripts/install-xq.sh"
   },
   "dependencies": {
     "webcrack": "2.16.0"
   },
   "devDependencies": {
+    "@toon-format/toon": "4.1.1",
     "javascript-obfuscator": "4.1.1"
   }
 }
