@@ -11,7 +11,16 @@ Covers:
     compare the decoded value against the original JSON for structural
     equality. If Node or the npm reference package is unavailable, the
     round-trip check is skipped with a clear message rather than silently
-    passing (there is no bundled fallback TOON decoder in this repo).
+    passing.
+  - The same round trip through this module's own decode(), and a *cross
+    check* that our decoder and the reference decoder produce the same value
+    from the same document. That cross check is what makes the decoder
+    trustworthy: "our encoder round-trips through our decoder" would also be
+    satisfied by two matching misreadings of the spec, and xq answers every
+    question out of decoded data, so a single misparsed row would quietly
+    change answers with nothing left to notice it by.
+  - Corrupt documents: a count that disagrees with its header, a bad indent
+    and an unterminated quote each have to fail loudly.
 """
 import json
 import math
@@ -265,6 +274,272 @@ def test_round_trip_against_reference():
         check("xray_sentinel_sdk/xray.json present", False, sample_path)
 
 
+# ---------------------------------------------------------------------------
+# decode(): round trip through our own decoder, and cross-check against the
+# reference decoder on the same documents
+# ---------------------------------------------------------------------------
+
+def _sample_xray():
+    path = os.path.join(ROOT, "tests", "samples", "xray_sentinel_sdk", "xray.json")
+    if not os.path.isfile(path):
+        return None
+    with open(path, "r", encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def test_decode_round_trip():
+    """decode(encode(v)) == v for every fixture above, and for the real sample.
+
+    Pure Python, no Node: this is the check that must hold on any machine, since
+    xq reads xray.toon through this decoder whether or not a reference
+    implementation is installed.
+    """
+    print("decode round-trip (pure Python)")
+    for name, value in ROUND_TRIP_CASES:
+        encoded = toon.encode(value)
+        try:
+            decoded = toon.decode(encoded)
+        except Exception as exc:  # noqa: BLE001 -- any failure is a test failure
+            check("decode round-trip: %s" % name, False,
+                  "%s: %s\n---\n%s" % (type(exc).__name__, exc, encoded))
+            continue
+        check("decode round-trip: %s" % name, _json_equal(decoded, value),
+              "encoded=%r\ndecoded=%r\noriginal=%r" % (encoded, decoded, value))
+
+    # Every literal-form assertion earlier in this file is also a round-trip
+    # case: those pin the exact text, these pin that the text reads back.
+    for name, value in (
+        ("inline primitive array", {"tags": ["admin", "ops", "dev"]}),
+        ("empty array field", {"tags": []}),
+        ("root empty array", []),
+        ("root primitive array", [1, 2, 3]),
+        ("root empty object", {}),
+        ("root primitive string", "hello"),
+        ("root primitive number", 42),
+        ("empty object field", {"obj": {}}),
+        ("array of primitive arrays", {"pairs": [[1, 2], [3, 4]]}),
+        ("single-entry object stays nested", {"users": {"alice": {"age": 30, "city": "Berlin"}}}),
+        ("empty object disqualifies tabular", {"items": [{}, {"a": 1}]}),
+        ("mixed-type column", {"items": [{"a": 1}, {"a": {"x": 1}}]}),
+        ("tabular cell needing quotes", {"items": [{"a": "x,y"}, {"a": "p,q"}]}),
+        ("quoted key", {"my-key": 1}),
+        ("control char", {"note": "a\x01b"}),
+        ("nested array in list item", {"items": [[{"a": 1}, {"a": 2}]]}),
+        ("tabular first field in list item", {"items": [{"k": [{"a": 1}, {"a": 2}], "z": 9}]}),
+        ("keyed tabular first field in list item",
+         {"items": [{"m": {"a": {"x": 1}, "b": {"x": 2}}, "z": 1}]}),
+        ("deeply nested list forms", {"x": [[[{"a": 1}, {"a": 2}]]]}),
+    ):
+        encoded = toon.encode(value)
+        try:
+            decoded = toon.decode(encoded)
+        except Exception as exc:  # noqa: BLE001
+            check("decode round-trip: %s" % name, False,
+                  "%s: %s\n---\n%s" % (type(exc).__name__, exc, encoded))
+            continue
+        check("decode round-trip: %s" % name, _json_equal(decoded, value),
+              "encoded=%r\ndecoded=%r\noriginal=%r" % (encoded, decoded, value))
+
+    sample = _sample_xray()
+    if sample is None:
+        check("xray_sentinel_sdk/xray.json present for decode round-trip", False, "")
+        return
+    encoded = toon.encode(sample)
+    decoded = toon.decode(encoded)
+    check("decode round-trip: xray_sentinel_sdk/xray.json",
+          _json_equal(decoded, sample), "structural mismatch (both are large)")
+
+    # and the xray.toon actually sitting in the sample directory, which is what
+    # xq reads -- not just one we re-encoded here
+    on_disk = os.path.join(ROOT, "tests", "samples", "xray_sentinel_sdk", "xray.toon")
+    if os.path.isfile(on_disk):
+        with open(on_disk, "r", encoding="utf-8") as fh:
+            text = fh.read()
+        check("decode: the sample's own xray.toon equals its xray.json",
+              _json_equal(toon.decode(text), sample), "structural mismatch")
+    else:
+        check("xray_sentinel_sdk/xray.toon present", False, on_disk)
+
+
+def test_decode_cross_checked_against_reference():
+    """Our decoder and the reference decoder must agree on the same documents.
+
+    The encoder was verified by decoding its output with the reference. The
+    decoder has no such external oracle of its own, so this is the substitute:
+    feed one document to both decoders and require the same value. A bug that
+    round-trips (encode and decode wrong in mirror-image ways) survives the test
+    above and dies here.
+
+    Key *order* is compared loosely against the reference on purpose: JavaScript
+    objects place integer-like keys ("42") first regardless of insertion order,
+    so the reference reorders keys our decoder preserves. Order is pinned
+    exactly against the original value in test_decode_round_trip instead.
+    """
+    print("decode cross-checked against the reference decoder")
+    node = _find_node()
+    decode_cli = os.path.join(ROOT, "skill", "tests", "_toon_ref_decode.mjs")
+    if node is None or not os.path.isfile(decode_cli):
+        check("reference decoder available for cross-check", False,
+              "node=%r decode_cli_exists=%s -- install the @toon-format/toon "
+              "devDependency (npm install) and put node on PATH to run the "
+              "cross-check" % (node, os.path.isfile(decode_cli)))
+        return
+    probe = subprocess.run([node, decode_cli], input="a: 1", capture_output=True,
+                           text=True, cwd=os.path.dirname(decode_cli))
+    if probe.returncode != 0:
+        check("reference decoder resolvable for cross-check", False,
+              "run 'npm install' at the repo root\n" + probe.stderr[-400:])
+        return
+
+    cases = list(ROUND_TRIP_CASES)
+    sample = _sample_xray()
+    if sample is not None:
+        cases.append(("xray_sentinel_sdk/xray.json", sample))
+
+    for name, value in cases:
+        encoded = toon.encode(value)
+        theirs, err = _reference_decode(node, decode_cli, encoded)
+        if err:
+            check("cross-check: %s" % name, False, "reference decode failed: %s" % err)
+            continue
+        try:
+            ours = toon.decode(encoded)
+        except Exception as exc:  # noqa: BLE001
+            check("cross-check: %s" % name, False,
+                  "our decoder failed where the reference succeeded: %s: %s"
+                  % (type(exc).__name__, exc))
+            continue
+        check("cross-check: %s" % name, _json_equal_unordered(ours, theirs),
+              "ours=%r\ntheirs=%r" % (ours, theirs))
+
+
+def _json_equal_unordered(a, b):
+    """_json_equal, but object key order is not compared (see the cross-check docstring)."""
+    if isinstance(a, bool) or isinstance(b, bool):
+        return a is b
+    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+        return float(a) == float(b)
+    if isinstance(a, dict) and isinstance(b, dict):
+        if set(a.keys()) != set(b.keys()):
+            return False
+        return all(_json_equal_unordered(a[k], b[k]) for k in a)
+    if isinstance(a, list) and isinstance(b, list):
+        if len(a) != len(b):
+            return False
+        return all(_json_equal_unordered(x, y) for x, y in zip(a, b))
+    return a == b
+
+
+# A declared count that disagrees with the rows under it, a broken indent or an
+# unterminated quote all mean the document was altered after it was written.
+# Reading it anyway would put a short table -- or a row's fields shifted by one
+# -- into an xq answer, where nothing downstream can tell it apart from the
+# truth. Each of these must raise.
+CORRUPT_CASES = [
+    ("tabular rows fewer than declared", "users[3]{id,name}:\n  1,a\n  2,b"),
+    ("tabular rows more than declared", "users[2]{id,name}:\n  1,a\n  2,b\n  3,c"),
+    ("tabular row has an extra cell", "users[2]{id,name}:\n  1,a\n  2,b,c"),
+    ("tabular row is missing a cell", "users[2]{id,name}:\n  1,a\n  2"),
+    ("inline array count disagrees", "tags[3]: a,b"),
+    ("list items fewer than declared", "items[3]:\n  - 1\n  - 2"),
+    ("list items more than declared", "items[2]:\n  - 1\n  - 2\n  - 3"),
+    ("keyed entries disagree", "users[3:]{age}:\n  alice: 1\n  bob: 2"),
+    ("keyed entry cell count disagrees", "users[2:]{age,city}:\n  a: 1\n  b: 2,x"),
+    ("indent is not a multiple of indentSize", "a:\n   b: 1"),
+    ("indent jumps two levels", "a:\n    b: 1"),
+    ("tab used for indentation", "a:\n\tb: 1"),
+    ("over-indented sibling field", "a:\n  b: 1\n    c: 2"),
+    ("blank line inside a table", "users[2]{id}:\n  1\n\n  2"),
+    ("unterminated quoted value", 'note: "abc'),
+    ("unterminated quoted key", '"abc: 1'),
+    ("unterminated quote in a row", 'users[1]{a}:\n  "x'),
+    ("unknown escape sequence", 'note: "a\\qb"'),
+    ("lone surrogate escape", 'note: "\\ud800"'),
+    ("array length with a leading zero", "a[01]: 1"),
+    ("negative array length", "a[-1]: 1"),
+    ("keyed header without a field list", "a[2:]:\n  x: 1"),
+    ("duplicate sibling key", "a: 1\na: 2"),
+    ("duplicate field name", "u[1]{a,a}:\n  1,2"),
+    ("content after the document root", "a: 1\n[2]: 1,2"),
+    ("keyless header below the root", "a:\n  [2]: 1,2"),
+]
+
+
+def test_decode_rejects_corrupt_documents():
+    print("decode rejects corrupt documents")
+    for name, text in CORRUPT_CASES:
+        try:
+            got = toon.decode(text)
+        except toon.ToonDecodeError as exc:
+            # The line number is the part that makes the failure actionable: it
+            # says which row of a 3000-line artifact stopped being readable.
+            check("rejects %s" % name, exc.line is not None,
+                  "raised without a line number: %s" % exc)
+            continue
+        except Exception as exc:  # noqa: BLE001
+            check("rejects %s" % name, False,
+                  "raised %s instead of ToonDecodeError: %s" % (type(exc).__name__, exc))
+            continue
+        check("rejects %s" % name, False, "accepted it and returned %r" % (got,))
+
+    # The forms this module does not implement have to say so rather than
+    # guessing: a tab-delimited document decoded as if it were comma-delimited
+    # would return one string where a row of values was meant.
+    for name, text in (("tab delimiter", "a[2\t]: 1\t2"),
+                       ("pipe delimiter", "a[2|]: 1|2")):
+        try:
+            got = toon.decode(text)
+        except NotImplementedError as exc:
+            check("refuses the %s and names it" % name,
+                  "delimiter" in str(exc), str(exc))
+            continue
+        except Exception as exc:  # noqa: BLE001
+            check("refuses the %s and names it" % name, False,
+                  "raised %s: %s" % (type(exc).__name__, exc))
+            continue
+        check("refuses the %s and names it" % name, False,
+              "accepted it and returned %r" % (got,))
+
+    # A trailing newline is what a file on disk has; it is not corruption.
+    check("accepts a trailing newline",
+          toon.decode("a: 1\n") == {"a": 1}, toon.decode("a: 1\n"))
+    check("accepts a comment line",
+          toon.decode("# a note\na: 1") == {"a": 1}, toon.decode("# a note\na: 1"))
+    check("empty document is the empty object", toon.decode("") == {}, "")
+
+
+def test_decode_number_and_string_discrimination():
+    """A bare token is a number only in canonical S2 form; everything else is text.
+
+    This is the inverse of the encoder's quoting rule, and the place where a
+    decoder most easily changes data without failing: read "0042" as 42 and a
+    zero-padded id silently becomes an integer, while reading 42 as "42" would
+    turn every line number into a string.
+    """
+    print("bare token: number or string (SPEC S2, S7.2)")
+    check_eq("integer stays an int", toon.decode("n: 42"), {"n": 42})
+    check_eq("negative integer", toon.decode("n: -42"), {"n": -42})
+    check_eq("decimal is a float", toon.decode("n: 1.5"), {"n": 1.5})
+    check_eq("exponent form", toon.decode("n: 1e+21"), {"n": 1e21})
+    check_eq("integer-valued float token stays an int",
+             toon.decode("n: 2"), {"n": 2})
+    check("integer token is an int, not a float",
+          isinstance(toon.decode("n: 2")["n"], int), toon.decode("n: 2"))
+    # Quoted: always a string, however number-like it looks.
+    check_eq("quoted number is a string", toon.decode('n: "42"'), {"n": "42"})
+    check_eq("quoted bool is a string", toon.decode('n: "true"'), {"n": "true"})
+    check_eq("quoted null is a string", toon.decode('n: "null"'), {"n": "null"})
+    # Bare but not canonical: a string, matching the reference. The encoder
+    # quotes these anyway (its _NUMERIC_LIKE_RE is wider), so this only matters
+    # for documents it did not write.
+    check_eq("leading zeros are not a number", toon.decode("n: 007"), {"n": "007"})
+    check_eq("leading plus is not a number", toon.decode("n: +5"), {"n": "+5"})
+    check_eq("bare word is a string", toon.decode("n: admin"), {"n": "admin"})
+    check_eq("literals", toon.decode("a: true\nb: false\nc: null"),
+             {"a": True, "b": False, "c": None})
+    check("bool is a bool, not 1", toon.decode("a: true")["a"] is True, "")
+
+
 def main():
     test_inline_form()
     test_list_form()
@@ -275,6 +550,10 @@ def main():
     test_number_formatting()
     test_empty_object_and_root()
     test_round_trip_against_reference()
+    test_decode_round_trip()
+    test_decode_cross_checked_against_reference()
+    test_decode_rejects_corrupt_documents()
+    test_decode_number_and_string_discrimination()
     print("")
     print("passed %d, failed %d" % (len(PASS), len(FAIL)))
     for name, detail in FAIL:

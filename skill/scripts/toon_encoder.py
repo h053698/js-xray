@@ -594,6 +594,886 @@ def encode(value, indent_size=2, delimiter=","):
         INDENT_UNIT = prev_indent
 
 
+# ---------------------------------------------------------------------------
+# Decoder
+#
+# Every rule below is the inverse of an encoder rule above, which is why the two
+# live in one module: a decoder in its own file would let one side be edited
+# without the other, and the first thing to break would be the round trip.
+#
+# The judgements are cross-checked against the reference implementation
+# (@toon-format/toon 4.1.1, strict mode), because "our encoder round-trips
+# through our decoder" is satisfied by two matching misreadings of the spec.
+# ---------------------------------------------------------------------------
+
+# SPEC S7.2 as the *decoder* sees it. Deliberately narrower than the encoder's
+# _NUMERIC_LIKE_RE: the encoder quotes the wider set (it also treats "+5" and
+# "007" as number-like and so quotes those strings), while a bare token only
+# becomes a number if it is in canonical S2 form -- no leading "+", no leading
+# zeros. Because the encoder quotes the superset, every bare token it emits that
+# could be read as a number *is* one, and every string that might have been
+# confused for a number arrives quoted. Widening this pattern would start
+# turning strings into numbers; narrowing it would turn numbers into strings.
+_NUMERIC_LITERAL_RE = re.compile(r"^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$")
+
+_LEADING_WS_RE = re.compile(r"^[ \t]*")
+_BRACKET_LENGTH_RE = re.compile(r"^(?:0|[1-9][0-9]*)$")
+
+# SPEC S7.1 read backwards: the escapes _ESCAPES writes, plus \uXXXX from
+# _escape_codepoint. Anything else after a backslash is a corrupt document, not
+# a literal backslash -- the encoder always doubles a real one.
+_UNESCAPES = {"n": "\n", "t": "\t", "r": "\r", "\\": "\\", '"': '"'}
+
+
+class ToonDecodeError(ValueError):
+    """Raised when a TOON document cannot be read as written.
+
+    Carries the 1-based line number when one is known. Every count mismatch,
+    bad indent and unterminated quote lands here rather than being papered over:
+    xq answers questions *from* this data, so a row silently dropped here comes
+    back as a confident wrong answer with nothing left to notice it by.
+    """
+
+    def __init__(self, message, line=None, source=None):
+        self.line = line
+        self.source = source
+        if line is not None:
+            message = "line %d: %s" % (line, message)
+            if source is not None:
+                message += "\n  %s" % source
+        ValueError.__init__(self, message)
+
+
+def _trim_spaces(text):
+    """Strip ASCII spaces only (SPEC S7): a tab or NBSP is part of the token."""
+    return text.strip(" ")
+
+
+def _find_closing_quote(content, start):
+    i = start + 1
+    while i < len(content):
+        if content[i] == "\\" and i + 1 < len(content):
+            i += 2
+            continue
+        if content[i] == '"':
+            return i
+        i += 1
+    return -1
+
+
+def _find_unquoted_char(content, char, start=0):
+    """Index of char outside quoted spans, or -1. Structural scan for ':' '[' etc."""
+    in_quotes = False
+    i = start
+    while i < len(content):
+        c = content[i]
+        if c == "\\" and i + 1 < len(content) and in_quotes:
+            i += 2
+            continue
+        if c == '"':
+            in_quotes = not in_quotes
+            i += 1
+            continue
+        if c == char and not in_quotes:
+            return i
+        i += 1
+    return -1
+
+
+def _find_matching_brace(content, brace_start):
+    in_quotes = False
+    depth = 0
+    i = brace_start
+    while i < len(content):
+        c = content[i]
+        if c == "\\" and i + 1 < len(content) and in_quotes:
+            i += 2
+            continue
+        if c == '"':
+            in_quotes = not in_quotes
+            i += 1
+            continue
+        if not in_quotes:
+            if c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+                if depth == 0:
+                    return i
+        i += 1
+    return -1
+
+
+def _unescape_string(text, line=None):
+    r"""Inverse of _escape_string (SPEC S7.1), including \uXXXX from _escape_codepoint."""
+    out = []
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if ch != "\\":
+            out.append(ch)
+            i += 1
+            continue
+        if i + 1 >= n:
+            raise ToonDecodeError("invalid escape: backslash at end of string", line)
+        nxt = text[i + 1]
+        if nxt == "u":
+            if i + 6 > n:
+                raise ToonDecodeError(
+                    "invalid escape: truncated \\u escape at %r" % text[i:i + 6], line)
+            hexits = text[i + 2:i + 6]
+            if not re.match(r"^[0-9a-fA-F]{4}$", hexits):
+                raise ToonDecodeError(
+                    "invalid escape: \\u must be followed by 4 hex digits, got %r" % hexits,
+                    line)
+            cp = int(hexits, 16)
+            if 0xD800 <= cp <= 0xDFFF:
+                # The encoder refuses to write these (see _has_unpaired_surrogate),
+                # so one here means the document was not written by this encoder.
+                raise ToonDecodeError(
+                    "invalid escape: \\u%s is a lone surrogate; supplementary code "
+                    "points must appear as literal UTF-8" % hexits, line)
+            out.append(chr(cp))
+            i += 6
+            continue
+        if nxt in _UNESCAPES:
+            out.append(_UNESCAPES[nxt])
+            i += 2
+            continue
+        raise ToonDecodeError("invalid escape: \\%s" % nxt, line)
+    return "".join(out)
+
+
+def _parse_string_literal(token, line=None):
+    """A quoted token to its string; a bare token to itself (keys, field names)."""
+    token = _trim_spaces(token)
+    if token.startswith('"'):
+        close = _find_closing_quote(token, 0)
+        if close == -1:
+            raise ToonDecodeError("unterminated string: missing closing quote", line)
+        if close != len(token) - 1:
+            raise ToonDecodeError("unexpected characters after closing quote", line)
+        return _unescape_string(token[1:close], line)
+    return token
+
+
+def _parse_number_token(token):
+    """The token as int/float, or None when it is not a canonical S2 number.
+
+    Integer-shaped tokens become ints, not floats: _format_number writes 3 for
+    the integer 3, and a float 3.0 coming back out would print as "3.0" through
+    every consumer of this data. Non-finite results are not numbers at all
+    (matching the reference), so "1e999" stays the string it parses as.
+    """
+    if not _NUMERIC_LITERAL_RE.match(token):
+        return None
+    if "." in token or "e" in token or "E" in token:
+        value = float(token)
+        if math.isinf(value) or math.isnan(value):
+            return None
+        return value
+    value = int(token)
+    if math.isinf(float(value)):
+        return None
+    return value
+
+
+def _parse_primitive_token(token, line=None):
+    """Inverse of _encode_primitive: one token to null/bool/number/string."""
+    token = _trim_spaces(token)
+    if not token:
+        return ""
+    if token.startswith('"'):
+        return _parse_string_literal(token, line)
+    if token == "true":
+        return True
+    if token == "false":
+        return False
+    if token == "null":
+        return None
+    number = _parse_number_token(token)
+    if number is not None:
+        return number
+    return token
+
+
+def _parse_delimited_values(text, delim=DELIM):
+    """Split a row or inline body on the delimiter, honouring quotes (SPEC S9.1/S9.3)."""
+    values = []
+    buf = []
+    in_quotes = False
+    i = 0
+    n = len(text)
+    while i < n:
+        c = text[i]
+        if c == "\\" and i + 1 < n and in_quotes:
+            buf.append(text[i:i + 2])
+            i += 2
+            continue
+        if c == '"':
+            in_quotes = not in_quotes
+            buf.append(c)
+            i += 1
+            continue
+        if c == delim and not in_quotes:
+            values.append(_trim_spaces("".join(buf)))
+            buf = []
+            i += 1
+            continue
+        buf.append(c)
+        i += 1
+    tail = "".join(buf)
+    if tail or values:
+        values.append(_trim_spaces(tail))
+    return values
+
+
+def _parse_field_entries(text, line=None, delim=DELIM):
+    """The {..} field list to a plan of (name, children|None), inverse of _field_header."""
+    entries = []
+    buf = []
+    in_quotes = False
+    brace_depth = 0
+    i = 0
+    n = len(text)
+    while i < n:
+        c = text[i]
+        if c == "\\" and i + 1 < n and in_quotes:
+            buf.append(text[i:i + 2])
+            i += 2
+            continue
+        if c == '"':
+            in_quotes = not in_quotes
+            buf.append(c)
+            i += 1
+            continue
+        if not in_quotes:
+            if c == "{":
+                brace_depth += 1
+            elif c == "}":
+                brace_depth -= 1
+            elif c == delim and brace_depth == 0:
+                entries.append("".join(buf))
+                buf = []
+                i += 1
+                continue
+        buf.append(c)
+        i += 1
+    entries.append("".join(buf))
+
+    plan = []
+    for entry in entries:
+        entry = _trim_spaces(entry)
+        if not entry:
+            raise ToonDecodeError("empty field name in field list", line)
+        group_start = _find_unquoted_char(entry, "{")
+        if group_start == -1:
+            plan.append((_parse_string_literal(entry, line), None))
+            continue
+        name_part = _trim_spaces(entry[:group_start])
+        if not name_part:
+            raise ToonDecodeError("missing field name before nested field group", line)
+        group_end = _find_matching_brace(entry, group_start)
+        if group_end == -1:
+            raise ToonDecodeError("unmatched brace in field list", line)
+        if group_end != len(entry) - 1:
+            raise ToonDecodeError("unexpected content after nested field group", line)
+        plan.append((_parse_string_literal(name_part, line),
+                     _parse_field_entries(entry[group_start + 1:group_end], line, delim)))
+    return plan
+
+
+def _duplicate_field_name(plan):
+    seen = set()
+    for name, children in plan:
+        if name in seen:
+            return name
+        seen.add(name)
+        if children:
+            nested = _duplicate_field_name(children)
+            if nested is not None:
+                return nested
+    return None
+
+
+def _count_leaf_fields(plan):
+    """Cells per row: the depth-first leaf count of the field plan (SPEC S9.3)."""
+    total = 0
+    for _name, children in plan:
+        total += _count_leaf_fields(children) if children else 1
+    return total
+
+
+def _object_from_fields(plan, primitives):
+    """Rebuild one row's object by walking the field plan, inverse of _flatten_row."""
+    index = [0]
+
+    def walk(nodes):
+        obj = {}
+        for name, children in nodes:
+            if children is None and index[0] >= len(primitives):
+                continue
+            if children is not None:
+                obj[name] = walk(children)
+            else:
+                obj[name] = primitives[index[0]]
+                index[0] += 1
+        return obj
+
+    return walk(plan)
+
+
+class _Line:
+    """One significant line: its indent, its depth, and its content without indent."""
+
+    __slots__ = ("raw", "content", "indent", "depth", "number")
+
+    def __init__(self, raw, content, indent, depth, number):
+        self.raw = raw
+        self.content = content
+        self.indent = indent
+        self.depth = depth
+        self.number = number
+
+
+class _Reader:
+    def __init__(self, lines, blank_lines):
+        self.lines = lines
+        self.blank_lines = blank_lines
+        self.pos = 0
+        self.last = None
+
+    def peek(self):
+        return self.lines[self.pos] if self.pos < len(self.lines) else None
+
+    def read(self):
+        line = self.peek()
+        if line is not None:
+            self.pos += 1
+            self.last = line
+        return line
+
+    def check_no_blank_lines(self, start, end, context):
+        """SPEC S12: a blank line may not interrupt a table or list body.
+
+        The encoder never writes one, so a blank line between rows means lines
+        were inserted or removed -- exactly the corruption that would otherwise
+        read as a short table.
+        """
+        if start is None or end is None:
+            return
+        for number in self.blank_lines:
+            if start < number < end:
+                raise ToonDecodeError(
+                    "blank line inside %s is not allowed" % context, number)
+
+
+def _scan_lines(text, indent_size):
+    """Split a document into significant lines, dropping comments and blanks.
+
+    Splits on "\n" alone, like the reference: str.splitlines() would also break
+    on U+2028, U+0085 and friends, and those are legal *inside* a quoted string
+    (the encoder only escapes C0 controls), so splitlines would tear a value in
+    half and then fail to explain why.
+    """
+    lines = []
+    blank_lines = []
+    for number, raw in enumerate(text.split("\n"), start=1):
+        if number == 1 and raw.startswith("\ufeff"):
+            raw = raw[1:]
+        if raw.endswith("\r"):
+            raw = raw[:-1]
+        leading = _LEADING_WS_RE.match(raw).group(0)
+        if "\t" in leading:
+            raise ToonDecodeError("tabs are not allowed in indentation", number, raw)
+        indent = len(leading)
+        content = raw[indent:].rstrip(" ")
+        if content.startswith("#"):
+            continue  # SPEC S13: full-line comment
+        if not content:
+            blank_lines.append(number)
+            continue
+        if indent % indent_size != 0:
+            raise ToonDecodeError(
+                "indentation must be a multiple of %d spaces, found %d"
+                % (indent_size, indent), number, raw)
+        lines.append(_Line(raw, content, indent, indent // indent_size, number))
+    return lines, blank_lines
+
+
+def _parse_bracket_segment(segment, line=None):
+    """'[3]' -> (3, keyed=False); '[3:]' -> (3, keyed=True). Comma delimiter only."""
+    content = segment
+    if content.endswith("\t") or content.endswith("|"):
+        raise NotImplementedError(
+            "this decoder implements the comma delimiter only; header %r declares "
+            "the %s delimiter (SPEC S11)"
+            % ("[" + segment + "]", "tab" if content.endswith("\t") else "pipe"))
+    keyed = False
+    if content.endswith(":"):
+        keyed = True
+        content = content[:-1]
+    if not _BRACKET_LENGTH_RE.match(content):
+        raise ToonDecodeError(
+            "invalid array length %r (expected a non-negative integer without "
+            "leading zeros)" % ("[" + segment + "]"), line)
+    return int(content, 10), keyed
+
+
+def _parse_array_header(content, line=None):
+    """Parse 'key[3]{a,b}:' and friends. None when the line is not a header at all.
+
+    Returns a dict with key (None when keyless), length, keyed, fields (None when
+    absent) and inline (the text after the colon, None when there is none).
+    Raises when the line *is* a header but a malformed one -- being lenient there
+    would reinterpret a damaged header as an ordinary key.
+    """
+    trimmed = content.lstrip(" ")
+    if trimmed.startswith('"'):
+        close = _find_closing_quote(trimmed, 0)
+        if close == -1:
+            return None
+        if not trimmed[close + 1:].startswith("["):
+            return None
+        key_end = len(content) - len(trimmed) + close + 1
+        bracket_start = content.find("[", key_end)
+    else:
+        bracket_start = _find_unquoted_char(content, "[")
+    if bracket_start == -1:
+        return None
+    first_colon = _find_unquoted_char(content, ":")
+    if first_colon != -1 and first_colon < bracket_start:
+        return None  # "key: [1]" is a primitive, not a header
+    bracket_end = _find_unquoted_char(content, "]", bracket_start)
+    if bracket_end == -1:
+        return None
+
+    brace_end = bracket_end + 1
+    brace_start = _find_unquoted_char(content, "{", bracket_end)
+    colon_after_bracket = _find_unquoted_char(content, ":", bracket_end)
+    if brace_start != -1 and brace_start < colon_after_bracket:
+        gap = content[bracket_end + 1:brace_start]
+        if gap != "":
+            raise ToonDecodeError(
+                "unexpected content %r between bracket segment and field list"
+                % gap.strip(), line, content)
+        found = _find_matching_brace(content, brace_start)
+        if found != -1:
+            brace_end = found + 1
+
+    colon = _find_unquoted_char(content, ":", max(bracket_end, brace_end))
+    if colon == -1:
+        return None
+    gap_start = max(bracket_end + 1, brace_end)
+    gap = content[gap_start:colon]
+    if gap != "":
+        raise ToonDecodeError(
+            "unexpected content %r between bracket segment and colon" % gap.strip(),
+            line, content)
+
+    key = None
+    if bracket_start > 0:
+        raw_key = content[:bracket_start]
+        if raw_key != raw_key.rstrip():
+            raise ToonDecodeError(
+                "unexpected whitespace between key and bracket segment", line, content)
+        key = _parse_string_literal(raw_key, line) if raw_key.startswith('"') else raw_key
+
+    inline = _trim_spaces(content[colon + 1:]) or None
+    length, keyed = _parse_bracket_segment(content[bracket_start + 1:bracket_end], line)
+
+    fields = None
+    if brace_start != -1 and brace_start < colon:
+        found = _find_matching_brace(content, brace_start)
+        if found != -1 and found < colon:
+            fields = _parse_field_entries(content[brace_start + 1:found], line)
+
+    if keyed and fields is None:
+        raise ToonDecodeError("keyed header requires a field list", line, content)
+    if fields is not None:
+        duplicate = _duplicate_field_name(fields)
+        if duplicate is not None:
+            raise ToonDecodeError(
+                "duplicate field name %r in field list" % duplicate, line, content)
+        if inline is not None:
+            raise ToonDecodeError(
+                "unexpected content after a fields-bearing header colon", line, content)
+    return {"key": key, "length": length, "keyed": keyed, "fields": fields,
+            "inline": inline}
+
+
+def _is_array_header_content(content):
+    return content.strip().startswith("[") and _find_unquoted_char(content, ":") != -1
+
+
+def _is_key_value_content(content):
+    return _find_unquoted_char(content, ":") != -1
+
+
+def _is_key_value_line(line):
+    content = line.content
+    if content.startswith('"'):
+        close = _find_closing_quote(content, 0)
+        if close == -1:
+            return False
+        return ":" in content[close + 1:]
+    return ":" in content
+
+
+def _is_data_row(content, delim=DELIM):
+    """A tabular row rather than a key-value line: no colon, or a delimiter first."""
+    colon = _find_unquoted_char(content, ":")
+    if colon == -1:
+        return True
+    delim_pos = _find_unquoted_char(content, delim)
+    return delim_pos != -1 and delim_pos < colon
+
+
+def _parse_key_token(content, start, line=None):
+    """(key, index after its colon) for a quoted or bare key (SPEC S7.3)."""
+    if start < len(content) and content[start] == '"':
+        close = _find_closing_quote(content, start)
+        if close == -1:
+            raise ToonDecodeError("unterminated quoted key", line, content)
+        key = _unescape_string(content[start + 1:close], line)
+        pos = close + 1
+        if pos >= len(content) or content[pos] != ":":
+            raise ToonDecodeError("missing colon after key", line, content)
+        return key, pos + 1
+    colon = _find_unquoted_char(content, ":", start)
+    if colon == -1:
+        raise ToonDecodeError("missing colon after key", line, content)
+    return _trim_spaces(content[start:colon]), colon + 1
+
+
+def _assert_count(actual, expected, what, line):
+    """The declared count is data, not decoration.
+
+    '[2]{id,name}' followed by three rows means lines were added or lost. A
+    decoder that returned all three would hand xq a table nobody declared, and
+    one that returned two would drop a row without saying so.
+    """
+    if actual != expected:
+        raise ToonDecodeError(
+            "expected %d %s, got %d" % (expected, what, actual),
+            line.number if line is not None else None,
+            line.raw if line is not None else None)
+
+
+def _assert_unique_key(key, seen, line):
+    if key in seen:
+        raise ToonDecodeError("duplicate sibling key %r" % key, line.number, line.raw)
+    seen.add(key)
+
+
+def _decode_document(reader):
+    first = reader.peek()
+    if first is None:
+        return {}  # SPEC S8: an empty document is the empty object
+
+    if _trim_spaces(first.content) == "[]":
+        reader.read()
+        _assert_fully_consumed(reader)
+        return []
+
+    if _is_array_header_content(first.content):
+        header = _parse_array_header(first.content, first.number)
+        if header is not None:
+            reader.read()
+            value = _decode_array_from_header(header, reader, 0, first)
+            _assert_fully_consumed(reader)
+            return value
+
+    reader.read()
+    following = reader.peek()
+    if following is None and not _is_key_value_line(first):
+        # SPEC S5: a lone primitive is a valid root.
+        return _parse_primitive_token(first.content, first.number)
+    if not _is_key_value_line(first) and following is not None and following.depth == 0:
+        raise ToonDecodeError(
+            "top-level document must start with a key-value or array-header line",
+            first.number, first.raw)
+
+    obj = {}
+    seen = set()
+    key, value = _decode_key_value(first, reader, 0, seen)
+    obj[key] = value
+    while True:
+        line = reader.peek()
+        if line is None:
+            break
+        if line.depth != 0:
+            raise ToonDecodeError(
+                "over-indented line: expected depth 0, found %d" % line.depth,
+                line.number, line.raw)
+        reader.read()
+        key, value = _decode_key_value(line, reader, 0, seen)
+        obj[key] = value
+    return obj
+
+
+def _assert_fully_consumed(reader):
+    line = reader.peek()
+    if line is not None:
+        raise ToonDecodeError("unexpected content after the document root",
+                             line.number, line.raw)
+
+
+def _decode_key_value(line, reader, base_depth, seen):
+    """One 'key: ...' line (plus whatever it owns below) -> (key, value)."""
+    content = line.content
+    header = _parse_array_header(content, line.number)
+    if header is not None and header["key"] is not None:
+        _assert_unique_key(header["key"], seen, line)
+        return header["key"], _decode_array_from_header(header, reader, base_depth, line)
+    if header is not None and header["key"] is None:
+        raise ToonDecodeError(
+            "keyless %s header is only valid at the document root"
+            % ("keyed" if header["keyed"] else "array"), line.number, line.raw)
+
+    key, end = _parse_key_token(content, 0, line.number)
+    rest = _trim_spaces(content[end:])
+    _assert_unique_key(key, seen, line)
+
+    if not rest:
+        nxt = reader.peek()
+        if nxt is not None and nxt.depth > base_depth:
+            if nxt.depth > base_depth + 1:
+                raise ToonDecodeError(
+                    "indentation depth jump: expected depth %d, found %d"
+                    % (base_depth + 1, nxt.depth), nxt.number, nxt.raw)
+            return key, _decode_object_fields(reader, base_depth + 1)
+        return key, {}  # SPEC S8: "key:" with nothing under it is the empty object
+    if rest == "[]":
+        return key, []
+    return key, _parse_primitive_token(rest, line.number)
+
+
+def _decode_object_fields(reader, base_depth):
+    obj = {}
+    seen = set()
+    depth = None
+    while True:
+        line = reader.peek()
+        if line is None or line.depth < base_depth:
+            break
+        if depth is None:
+            depth = line.depth
+        if line.depth == depth:
+            reader.read()
+            key, value = _decode_key_value(line, reader, depth, seen)
+            obj[key] = value
+        elif line.depth > depth:
+            raise ToonDecodeError(
+                "over-indented line: expected depth %d, found %d" % (depth, line.depth),
+                line.number, line.raw)
+        else:
+            break
+    return obj
+
+
+def _decode_array_from_header(header, reader, base_depth, header_line):
+    if header["keyed"]:
+        return _decode_keyed_object(header, reader, base_depth, header_line)
+    if header["inline"] is not None:
+        # SPEC S9.1: inline primitive array
+        values = _parse_delimited_values(header["inline"])
+        items = [_parse_primitive_token(v, header_line.number) for v in values]
+        _assert_count(len(items), header["length"], "inline-form values", header_line)
+        return items
+    if header["fields"]:
+        return _decode_tabular(header, reader, base_depth, header_line)
+    return _decode_list(header, reader, base_depth, header_line)
+
+
+def _decode_tabular(header, reader, base_depth, header_line):
+    """SPEC S9.3: rows at header depth + 1, one flattened row per line."""
+    row_depth = base_depth + 1
+    leaf_count = _count_leaf_fields(header["fields"])
+    rows = []
+    start = end = None
+    last = header_line
+    while len(rows) < header["length"]:
+        line = reader.peek()
+        if line is None or line.depth != row_depth or not _is_data_row(line.content):
+            break
+        reader.read()
+        if start is None:
+            start = line.number
+        end = line.number
+        last = line
+        values = _parse_delimited_values(line.content)
+        _assert_count(len(values), leaf_count, "tabular row values", line)
+        rows.append(_object_from_fields(
+            header["fields"], [_parse_primitive_token(v, line.number) for v in values]))
+    _assert_count(len(rows), header["length"], "tabular rows", last)
+    reader.check_no_blank_lines(start, end, "a tabular array")
+    nxt = reader.peek()
+    if (nxt is not None and nxt.depth == row_depth
+            and not nxt.content.startswith("- ") and _is_data_row(nxt.content)):
+        raise ToonDecodeError(
+            "expected %d tabular rows, found more" % header["length"],
+            nxt.number, nxt.raw)
+    return rows
+
+
+def _decode_keyed_object(header, reader, base_depth, header_line):
+    """SPEC S9.5: 'entry: cells' lines at header depth + 1."""
+    entry_depth = base_depth + 1
+    leaf_count = _count_leaf_fields(header["fields"])
+    obj = {}
+    seen = set()
+    start = end = None
+    last = header_line
+    while True:
+        line = reader.peek()
+        if line is None or line.depth <= base_depth:
+            break
+        if line.depth > entry_depth:
+            raise ToonDecodeError("unexpected indentation inside keyed tabular object",
+                                  line.number, line.raw)
+        if _find_unquoted_char(line.content, ":") == -1:
+            raise ToonDecodeError("expected an entry row inside keyed tabular object",
+                                  line.number, line.raw)
+        reader.read()
+        if start is None:
+            start = line.number
+        end = line.number
+        last = line
+        key, key_end = _parse_key_token(line.content, 0, line.number)
+        _assert_unique_key(key, seen, line)
+        cells = _trim_spaces(line.content[key_end:])
+        values = [] if cells == "" else _parse_delimited_values(cells)
+        _assert_count(len(values), leaf_count, "keyed entry cells", line)
+        obj[key] = _object_from_fields(
+            header["fields"], [_parse_primitive_token(v, line.number) for v in values])
+    _assert_count(len(obj), header["length"], "keyed entries", last)
+    reader.check_no_blank_lines(start, end, "a keyed tabular object")
+    return obj
+
+
+def _decode_list(header, reader, base_depth, header_line):
+    """SPEC S9.2/S9.4: '- ' items at header depth + 1."""
+    item_depth = base_depth + 1
+    items = []
+    start = end = None
+    last = header_line
+    while len(items) < header["length"]:
+        line = reader.peek()
+        if line is None or line.depth != item_depth:
+            break
+        if not (line.content == "-" or line.content.startswith("- ")):
+            break
+        if start is None:
+            start = line.number
+        items.append(_decode_list_item(reader, item_depth))
+        if reader.last is not None:
+            end = reader.last.number
+            last = reader.last
+    _assert_count(len(items), header["length"], "list-form items", last)
+    reader.check_no_blank_lines(start, end, "a list-form array")
+    nxt = reader.peek()
+    if nxt is not None and nxt.depth == item_depth and nxt.content.startswith("- "):
+        raise ToonDecodeError(
+            "expected %d list-form items, found more" % header["length"],
+            nxt.number, nxt.raw)
+    return items
+
+
+def _decode_list_item(reader, base_depth):
+    """SPEC S9.2/S9.4/S10: one '- ...' item.
+
+    What follows the hyphen is read as though it were a line one level deeper:
+    an object's remaining fields sit at base_depth + 1, and a table the first
+    field opens has its rows at base_depth + 2. That is what the encoder writes
+    (see _lines_for_list_item_object).
+    """
+    line = reader.read()
+    if line is None:
+        raise ToonDecodeError("expected a list item")
+    if line.content == "-":
+        return {}  # SPEC S10: the empty object as a list item
+    if not line.content.startswith("- "):
+        raise ToonDecodeError('expected a list item to start with "- "',
+                              line.number, line.raw)
+    after = line.content[2:]
+    if not _trim_spaces(after):
+        return {}
+    if _trim_spaces(after) == "[]":
+        return []
+
+    item_line = _Line(line.raw, after, line.indent, line.depth, line.number)
+
+    if _is_array_header_content(after):
+        header = _parse_array_header(after, line.number)
+        if header is not None:
+            if header["keyed"] or header["fields"] is not None:
+                raise ToonDecodeError(
+                    "keyless %s is only valid at the document root"
+                    % ("keyed header" if header["keyed"]
+                       else "header with a field list"), line.number, line.raw)
+            return _decode_array_from_header(header, reader, base_depth, item_line)
+
+    header = _parse_array_header(after, line.number)
+    if header is not None and header["key"] is not None and header["fields"] is not None:
+        obj = {}
+        seen = set([header["key"]])
+        obj[header["key"]] = _decode_array_from_header(
+            header, reader, base_depth + 1, item_line)
+        _follow_sibling_fields(obj, reader, base_depth + 1, seen)
+        return obj
+
+    if _is_key_value_content(after):
+        obj = {}
+        seen = set()
+        key, value = _decode_key_value(item_line, reader, base_depth + 1, seen)
+        obj[key] = value
+        _follow_sibling_fields(obj, reader, base_depth + 1, seen)
+        return obj
+
+    return _parse_primitive_token(after, line.number)
+
+
+def _follow_sibling_fields(obj, reader, follow_depth, seen):
+    """The fields of a list-item object after its first, at the item's own depth + 1."""
+    while True:
+        line = reader.peek()
+        if line is None or line.depth < follow_depth:
+            break
+        if line.depth != follow_depth or line.content.startswith("- "):
+            break
+        reader.read()
+        key, value = _decode_key_value(line, reader, follow_depth, seen)
+        obj[key] = value
+
+
+def decode(text, indent_size=2, delimiter=","):
+    """Decode a TOON v4.1 document (string) back to a JSON-model value.
+
+    The inverse of encode(): decode(encode(v)) == v for every v this module can
+    encode. Returns dict, list, str, int, float, bool or None, as json.load
+    would for the same data.
+
+    text: the document. A trailing newline is fine; a BOM is ignored.
+    indent_size: spaces per level, matching the encoder that wrote it (SPEC S12).
+    delimiter: must be "," -- this module implements the comma delimiter only.
+
+    Raises ToonDecodeError on anything it cannot read as written: a row count
+    that disagrees with its header, an indent that is not a multiple of
+    indent_size, an unterminated quote, a duplicate sibling key, an unknown
+    escape. Silence would be worse than the error: this data answers questions,
+    and a quietly dropped row is indistinguishable from a row that never existed.
+    """
+    if delimiter != ",":
+        raise NotImplementedError(
+            "this decoder implements the comma delimiter only (got %r)" % (delimiter,))
+    if not isinstance(text, str):
+        raise TypeError("decode() expects str, got %s" % type(text).__name__)
+    lines, blank_lines = _scan_lines(text, indent_size)
+    return _decode_document(_Reader(lines, blank_lines))
+
+
 def main(argv):
     if len(argv) < 2:
         sys.stderr.write("usage: toon_encoder.py input.json [output.toon]\n")

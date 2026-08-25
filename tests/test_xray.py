@@ -1448,11 +1448,15 @@ def test_xq_resolves_its_target():
         check("sample .xrayjs present for resolution", False, SAMPLE_XRAYJS)
         return
 
-    # backward compatibility: an explicit directory still works, and stays silent
+    # backward compatibility: an explicit directory still works, and is not
+    # announced back. The one stderr line it may carry is which explanation
+    # artifact answered (xray.toon or xray.json), which the caller never named.
     proc = run_xq(SAMPLE_XRAYJS, "summary")
     check("explicit directory still answers",
           proc.returncode == 0 and "functions 220" in proc.stdout, proc.stdout[:120])
-    check("explicit directory announces nothing", proc.stderr == "", proc.stderr[:120])
+    check("explicit directory is not announced back",
+          all(line.startswith("xq: read ") for line in proc.stderr.splitlines()),
+          proc.stderr[:120])
 
     tmp = tempfile.mkdtemp(prefix="jsxray_target_")
     try:
@@ -1689,6 +1693,177 @@ def test_install_xq_script():
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
+# ---------------------------------------------------------------------------
+# xq reads xray.toon or xray.json interchangeably
+# ---------------------------------------------------------------------------
+
+# Every subcommand, in the shape the CLI takes them. Both text and --json are
+# compared, because they are produced by different branches of each command: a
+# decode bug could leave the human output identical and shift a --json field.
+XQ_EQUIVALENCE_ARGV = [
+    ["summary"],
+    ["find", "getConfig"],
+    ["find", "^on$"],
+    ["find", "sentinel", "--strings"],
+    ["show", "on"],
+    ["show", "fn49"],
+    ["show", "fn197", "--full"],
+    ["callers", "on"],
+    ["callers", "fn195", "--depth", "2"],
+    ["callees", "on"],
+    ["flow", "fn49"],
+    ["port"],
+    ["port", "FNV"],
+    ["grep", "fetch"],
+    ["grep", "Math.imul"],
+    ["entries"],
+    ["entries", "--traced"],
+    ["roles"],
+    ["roles", "hash"],
+]
+
+
+def test_xq_reads_toon_and_json_identically():
+    """The same question must get the same answer whichever artifact was read.
+
+    xray.toon is xray.json re-encoded, so every xq answer has to be
+    byte-identical between the two. Comparing outputs is the only check that
+    covers the whole path: a decoder bug that drops one tabular row or shifts
+    one field would leave the TOON decode succeeding and quietly change an
+    answer, and no assertion about the decoder in isolation would catch what
+    reached the caller.
+
+    Each format gets its own copy of the run with the *other* artifact removed,
+    so neither run can fall back to the file under test and pass by accident.
+    """
+    print("xq reads xray.toon and xray.json identically")
+    if not os.path.isdir(SAMPLE_XRAYJS):
+        check("sample .xrayjs present for toon/json equivalence", False, SAMPLE_XRAYJS)
+        return
+
+    tmp = tempfile.mkdtemp(prefix="jsxray_toon_eq_")
+    try:
+        toon_dir = os.path.join(tmp, "toon_only.xrayjs")
+        json_dir = os.path.join(tmp, "json_only.xrayjs")
+        shutil.copytree(SAMPLE_XRAYJS, toon_dir)
+        shutil.copytree(SAMPLE_XRAYJS, json_dir)
+
+        source_toon = os.path.join(SAMPLE_XRAYJS, "xray.toon")
+        if not os.path.isfile(source_toon):
+            # The sample ships xray.toon; if it ever stops shipping one, encode
+            # it here rather than skipping -- a skipped equivalence test looks
+            # exactly like a passing one in the summary line.
+            sys.path.insert(0, SCRIPTS)
+            import toon_encoder  # noqa: PLC0415 -- only needed on this path
+            with open(os.path.join(SAMPLE_XRAYJS, "xray.json"), encoding="utf-8") as fh:
+                value = json.load(fh)
+            for target in (toon_dir, json_dir):
+                with open(os.path.join(target, "xray.toon"), "w",
+                          encoding="utf-8", newline="\n") as fh:
+                    fh.write(toon_encoder.encode(value))
+        os.remove(os.path.join(toon_dir, "xray.json"))
+        os.remove(os.path.join(json_dir, "xray.toon"))
+
+        check("the toon-only copy really has no xray.json",
+              not os.path.exists(os.path.join(toon_dir, "xray.json")), toon_dir)
+        check("the json-only copy really has no xray.toon",
+              not os.path.exists(os.path.join(json_dir, "xray.toon")), json_dir)
+
+        differing = []
+        for argv in XQ_EQUIVALENCE_ARGV:
+            label = " ".join(argv)
+            for flags in ([], ["--json"]):
+                from_toon = run_xq(toon_dir, *(flags + argv))
+                from_json = run_xq(json_dir, *(flags + argv))
+                shown = label + (" --json" if flags else "")
+                if from_toon.returncode != from_json.returncode:
+                    differing.append("%s: exit %d vs %d"
+                                     % (shown, from_toon.returncode, from_json.returncode))
+                    continue
+                if from_toon.stdout != from_json.stdout:
+                    differing.append("%s: stdout differs" % shown)
+        check("every subcommand answers identically from either artifact",
+              not differing, "; ".join(differing[:6]))
+
+        # and the provenance line says which one it read, on stderr only
+        proc = run_xq(toon_dir, "summary")
+        check("reading TOON is reported on stderr",
+              "read xray.toon" in proc.stderr, proc.stderr[:160])
+        check("the provenance note stays off stdout",
+              "xray.toon" not in proc.stdout, proc.stdout[:160])
+        proc = run_xq(json_dir, "summary")
+        check("falling back to JSON is reported on stderr",
+              "read xray.json" in proc.stderr, proc.stderr[:160])
+        check("--json output carries no provenance line",
+              run_xq(toon_dir, "--json", "summary").stderr == "",
+              run_xq(toon_dir, "--json", "summary").stderr[:160])
+
+        # TOON wins when both are present, and the answer is the same either way
+        both = os.path.join(tmp, "both.xrayjs")
+        shutil.copytree(SAMPLE_XRAYJS, both)
+        proc = run_xq(both, "summary")
+        check("xray.toon is preferred when both are present",
+              "read xray.toon" in proc.stderr, proc.stderr[:160])
+        check("the answer is the same as the json-only copy",
+              proc.stdout == run_xq(json_dir, "summary").stdout, "")
+
+        # a corrupt xray.toon is reported, not silently replaced by xray.json:
+        # the two are meant to agree, and one that no longer parses means they
+        # may not, which the caller has to hear about
+        broken = os.path.join(tmp, "broken.xrayjs")
+        shutil.copytree(SAMPLE_XRAYJS, broken)
+        with open(os.path.join(broken, "xray.toon"), encoding="utf-8") as fh:
+            text = fh.read()
+        lines = text.split("\n")
+        for i, line in enumerate(lines):
+            # a tabular header: drop one of its rows so the count no longer matches
+            if "]{" in line and line.rstrip().endswith(":"):
+                del lines[i + 1]
+                break
+        else:
+            check("the sample's xray.toon has a tabular header to corrupt", False, "")
+        with open(os.path.join(broken, "xray.toon"), "w",
+                  encoding="utf-8", newline="\n") as fh:
+            fh.write("\n".join(lines))
+        proc = run_xq(broken, "summary")
+        check("a corrupt xray.toon exits non-zero", proc.returncode != 0,
+              (proc.returncode, proc.stdout[:120]))
+        check("a corrupt xray.toon is named, with the line",
+              "xray.toon" in proc.stderr and "line" in proc.stderr, proc.stderr[:200])
+        check("a corrupt xray.toon does not quietly answer from xray.json",
+              "functions 220" not in proc.stdout, proc.stdout[:160])
+
+        # neither artifact: the failure names both, instead of only the one that
+        # used to be the single source
+        empty = os.path.join(tmp, "empty.xrayjs")
+        os.makedirs(empty)
+        proc = run_xq(empty, "summary")
+        check("a run with neither artifact exits non-zero", proc.returncode != 0,
+              proc.returncode)
+        check("the failure names both artifacts",
+              "xray.toon" in proc.stderr and "xray.json" in proc.stderr,
+              proc.stderr[:200])
+
+        # the schema gate applies to the TOON path too: an unknown schema must be
+        # refused whichever encoding carried it
+        stale = os.path.join(tmp, "stale.xrayjs")
+        os.makedirs(stale)
+        sys.path.insert(0, SCRIPTS)
+        import toon_encoder as _toon  # noqa: PLC0415 -- test-local
+        with open(os.path.join(stale, "xray.toon"), "w",
+                  encoding="utf-8", newline="\n") as fh:
+            fh.write(_toon.encode({"schema": "js-xray/explanation/99", "summary": {}}))
+        proc = run_xq(stale, "summary")
+        check("an unknown schema in TOON exits non-zero", proc.returncode != 0,
+              proc.returncode)
+        check("an unknown schema in TOON names both schemas and the file",
+              "js-xray/explanation/99" in proc.stderr
+              and "js-xray/explanation/1" in proc.stderr
+              and "xray.toon" in proc.stderr, proc.stderr[:250])
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def main():
     test_brace_matching()
     test_keyword_not_function()
@@ -1720,6 +1895,7 @@ def main():
     test_xq_fails_loudly()
     test_xq_warns_on_vm_obfuscated()
     test_xq_resolves_its_target()
+    test_xq_reads_toon_and_json_identically()
     test_install_xq_script()
     print("")
     print("passed %d, failed %d" % (len(PASS), len(FAIL)))

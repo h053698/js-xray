@@ -37,6 +37,7 @@ sys.path.insert(0, HERE)
 
 import explain  # noqa: E402  -- display_name, so labels match xray.json exactly
 import report  # noqa: E402  -- PORT_SNIPPETS via port_snippet(), not copied
+import toon_encoder  # noqa: E402  -- decode(), so xray.toon answers like xray.json
 
 SCHEMA = "js-xray/explanation/1"
 
@@ -58,6 +59,11 @@ class Run:
     Artifacts load on first use so "summary" never pays for structure.json (230KB
     on the sample), and a directory missing an optional artifact still answers
     every question that does not need it.
+
+    The explanation is read from xray.toon when it is there and xray.json
+    otherwise. Both carry the same value -- xray.toon is the same data encoded
+    by toon_encoder -- so which one was read changes nothing about the answer,
+    only how many bytes were parsed to reach it.
     """
 
     def __init__(self, path, spec=None):
@@ -69,6 +75,7 @@ class Run:
         # teaching the long form the resolution exists to avoid.
         self.spec = spec
         self._xray = None
+        self._xray_source = None
         self._structure = None
         self._clean = None
         self._report = None
@@ -84,10 +91,47 @@ class Run:
         except ValueError as exc:
             raise Missing("%s is not valid JSON: %s" % (name, exc))
 
+    def _read_toon(self, name):
+        """Decode one TOON artifact, or say which line stopped being readable.
+
+        A corrupt xray.toon is reported, never worked around by falling back to
+        xray.json: the two are meant to hold the same value, so a document that
+        no longer parses means they may now disagree, and quietly answering from
+        the other one would hide that.
+        """
+        p = os.path.join(self.dir, name)
+        try:
+            with open(p, encoding="utf-8") as fh:
+                text = fh.read()
+        except OSError as exc:
+            raise Missing("%s could not be read: %s" % (name, exc))
+        try:
+            return toon_encoder.decode(text)
+        except (toon_encoder.ToonDecodeError, NotImplementedError) as exc:
+            raise Missing("%s is not valid TOON: %s" % (name, exc))
+
+    def _read_explanation(self):
+        """(value, filename) for the explanation artifact: xray.toon, else xray.json.
+
+        TOON first because it is the smaller of the two and the one the pipeline
+        now writes for reading; JSON as the fallback so a run made before
+        xray.toon existed, or one where only the JSON was kept, still answers.
+        """
+        toon_path = os.path.join(self.dir, "xray.toon")
+        json_path = os.path.join(self.dir, "xray.json")
+        if os.path.isfile(toon_path):
+            return self._read_toon("xray.toon"), "xray.toon"
+        if os.path.isfile(json_path):
+            return self._read_json("xray.json"), "xray.json"
+        raise Missing(
+            "neither xray.toon nor xray.json found in %s" % self.dir)
+
     @property
     def xray(self):
         if self._xray is None:
-            data = self._read_json("xray.json")
+            data, source = self._read_explanation()
+            if not isinstance(data, dict):
+                raise Missing("%s does not contain an object at its root" % source)
             got = data.get("schema")
             # Loud, not lenient. A later schema could keep these field names and
             # change what they mean, and answering from it anyway would hand back
@@ -95,11 +139,21 @@ class Run:
             # have, since the caller asked precisely to avoid reading the file.
             if got != SCHEMA:
                 raise Missing(
-                    "xray.json has schema %r, expected %r. This xq reads only %s; "
+                    "%s has schema %r, expected %r. This xq reads only %s; "
                     "re-run the pipeline, or use the xq that shipped with that "
-                    "schema." % (got, SCHEMA, SCHEMA))
+                    "schema." % (source, got, SCHEMA, SCHEMA))
             self._xray = data
+            self._xray_source = source
         return self._xray
+
+    @property
+    def xray_source(self):
+        """Which file the explanation was read from, or None before it was read.
+
+        Left as None until something asks for the explanation, so consulting it
+        cannot be what triggers the read -- the lazy loading is the point.
+        """
+        return self._xray_source
 
     @property
     def structure(self):
@@ -1001,11 +1055,12 @@ def resolve_target(spec, cwd=None):
 def _looks_like_run(path):
     """Is this directory a run, rather than a directory that shares a name with a
     subcommand? Ordinary source trees do have a port/ or find/; a run has the
-    suffix or an xray.json in it."""
+    suffix, or one of the explanation artifacts in it."""
     if not os.path.isdir(path):
         return False
     return path.rstrip(os.sep).endswith(SUFFIX) or \
-        os.path.isfile(os.path.join(path, "xray.json"))
+        os.path.isfile(os.path.join(path, "xray.json")) or \
+        os.path.isfile(os.path.join(path, "xray.toon"))
 
 
 def split_target(argv):
@@ -1126,6 +1181,12 @@ def main(argv=None):
     except Missing as exc:
         print("xq: %s" % exc, file=sys.stderr)
         return 2
+    # Which of the two explanation artifacts answered, on stderr like the target
+    # line above it. The answer is identical either way, so this is provenance
+    # rather than content -- and it stays off stdout so --json remains parseable
+    # and a diff between the two forms shows nothing.
+    if not args.json and run.xray_source is not None:
+        print("xq: read %s" % run.xray_source, file=sys.stderr)
     if args.json:
         print(json.dumps(result, indent=1, ensure_ascii=False))
     else:

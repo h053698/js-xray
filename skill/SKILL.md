@@ -32,7 +32,7 @@ Prints the path to `xray.json` and writes `<name>.xrayjs/` next to the input:
 | `inline.json` | second-pass results: scoped arrays, decoders, replacements |
 | `inline.js` | intermediate, after string inlining and before deflattening |
 | `deflatten.json` | deflattening results: branches dropped, switch sequences linearised, and the reason for every construct deliberately left alone |
-| `xray.toon` | `xray.json`'s content re-encoded as [TOON](https://github.com/toon-format/toon) - read this instead of `xray.json` when re-loading the result into an LLM context and every byte counts |
+| `xray.toon` | `xray.json`'s content re-encoded as [TOON](https://github.com/toon-format/toon) - what `xq` reads by default, and what to read yourself instead of `xray.json` when re-loading the whole result into an LLM context |
 | `toon_stats.json` | the measured char/token reduction of `xray.toon` vs `xray.json` for this run - read this to see the actual savings, not an assumed one |
 | `pipeline.json` | run log: what each stage actually did, its command, ok/fail, and its own stdout metadata -- read this after a run to see which stage degraded or failed, instead of scrolling stderr |
 
@@ -78,15 +78,23 @@ instead of re-reading `xray.json` for each one - see
 
 ### xray.json or xray.toon?
 
-Same data, two encodings. Default to `xray.json` for everything below in this
-document - it is the canonical schema and every example refers to its field
-names. Read `xray.toon` instead only when you are about to load the result back
-into an LLM context (your own next turn, a sub-agent, a summarization pass) and
-want the same facts for materially fewer tokens; `toon_stats.json` in the same
-directory has the measured reduction for that run, so you do not have to take
-the savings on faith. Do not use `xray.toon` as a source for anything that
-parses field-by-field against the schema below - use `xray.json` for that, the
-two are equivalent but the schema section documents the JSON shape.
+Same data, two encodings, and `xq` reads either one: it prefers `xray.toon` and
+falls back to `xray.json`, naming on stderr which it read. Every `xq` answer is
+identical whichever it found, so this is not a choice you need to make before
+asking a question.
+
+It becomes a choice when you read a file yourself:
+
+- Loading the whole result into context (your own next turn, a sub-agent, a
+  summarization pass): `xray.toon`, for the same facts in materially fewer
+  tokens. `toon_stats.json` has the measured reduction for that run, so the
+  saving is not something you have to assume.
+- Parsing field-by-field against the schema: either carries the same values, but
+  the schema section below documents the JSON shape, so `xray.json` is the one to
+  match against.
+
+Before reading either one whole, check whether `xq` already answers the question
+- see [reading order](#reading-order-xq-first-cleanjs-last).
 
 ### Answering a question about this run
 
@@ -119,13 +127,34 @@ is not installed (`sh scripts/install-xq.sh`).
 | "Is the string-array deobfuscation trustworthy?" | `webcrack.json` (`"string array"`, `decoders`) and `inline.json` (`unresolved`, `rolled_back`) |
 | "Is any of `clean.js` still flattened, or did anything get removed?" | `deflatten.json` - what was dropped or linearised, and `switch_skips`/`dead_branch_skips` for what was left alone and why; diff `inline.js` against `clean.js` to see the exact change |
 | "Can I trust these findings as the module's real logic at all?" | `xray.json` -> `summary.vm_obfuscation`; anything but `none` means the analysis describes a bytecode interpreter, with the evidence in `vm_signals` |
-| "I need the facts but I'm token-constrained" | `xq` for a specific question; `xray.toon` (+ `toon_stats.json`) when you genuinely need all of it |
+| "I need the facts but I'm token-constrained" | `xq` for a specific question - always try this first; `xray.toon` (+ `toon_stats.json`) only when you genuinely need all of it. Never slice `clean.js` by hand for this |
 | "What exactly ran, and can I reproduce this stage by hand?" | `pipeline.json` -> that stage's `cmd` list, runnable as-is |
 
-**Read `xray.json` whole when the question is broad** - explaining the module,
-or porting it end to end. **Reach for `xq` when the question is narrow**, which
-in practice is most of reverse engineering: one symbol, one caller chain, one
-constant. See [the query CLI](#the-query-cli-xqpy) below for the subcommands.
+### Reading order: xq first, clean.js last
+
+Work outside in, and stop at the first step that answers the question:
+
+1. **`xq summary`** - what the file is, how many functions, which roles, the
+   caveats. A few hundred tokens, and it tells you where to look next.
+2. **`xq roles X` / `xq flow X` / `xq show X` / `xq find X` / `xq callers X`** -
+   narrow to the functions that matter, then read those. `xq show` already
+   includes the source of the function it describes, so this usually is the
+   answer.
+3. **`xray.toon`** - when you genuinely need the entire structured result at
+   once, e.g. porting the module end to end.
+4. **`clean.js` directly** - last resort, for something no artifact recorded.
+
+Reading `clean.js` in chunks is the expensive mistake to avoid. It has happened:
+an agent with `xq` and `xray.toon` available split `clean.js` into eight pieces
+and read them all, spent over half its context on it, and afterwards said it had
+simply forgotten the tools were there. Slicing the source costs several times
+what the same answer costs through `xq`, and the slices arrive without the roles,
+evidence, flows and contracts that the analysis already established - so you end
+up re-deriving by eye what `xray.json` states outright.
+
+If you do need source, prefer `xq show <fn>` (the function, with its analysis) or
+`xq grep <pattern>` (matching lines, each attributed to its enclosing function)
+over reading line ranges yourself.
 
 Useful flags:
 
@@ -201,6 +230,15 @@ It adds no stage and repeats no analysis - every value it prints was decided by
 than the file, which is most of reverse engineering: `xray.json` costs the same
 ~15k tokens whether the answer is one line or all of it, and four questions in,
 the context is gone.
+
+**Try `xq` before reading any artifact by hand, and before reading `clean.js` at
+all.** Most questions are narrower than the file, and the whole point of the tool
+is that a narrow question should cost a narrow amount. See
+[reading order](#reading-order-xq-first-cleanjs-last).
+
+It reads `xray.toon` when the run has one and `xray.json` otherwise, and says
+which on stderr. The answer is identical either way; `stdout` carries the answer
+alone, so `--json` stays parseable and diffing the two forms shows nothing.
 
 ### Installing it
 
@@ -302,8 +340,12 @@ judgements would be worse than no query tool, because the caller who skipped
   `show` still answer for the rest, marked `~`, but with a name, a line range and
   source only - there is no role or importance to report, and `xq` does not invent
   one. Raise `--top` and re-run the pipeline if you need them classified.
-- An unknown `schema` value, a missing `xray.json`, or a missing `structure.json`
-  under `callers` is an error naming the file, not a quiet empty answer.
+- An unknown `schema` value, a run with neither `xray.toon` nor `xray.json`, or a
+  missing `structure.json` under `callers` is an error naming the file, not a
+  quiet empty answer. An `xray.toon` that no longer parses is reported with the
+  line that broke, rather than silently answered from `xray.json` instead - the
+  two are meant to hold the same value, and one that stopped parsing means they
+  might not.
 - It will not pick between two runs. With the path omitted and several `.xrayjs`
   directories in reach, it lists them and exits - the one wrong answer a caller
   cannot detect is a correct one about the wrong file.
