@@ -31,6 +31,23 @@ MAX_FLOW_DEPTH = 6
 MAX_FLOW_NODES = 40
 MAX_TRACED_ENTRIES = 8
 
+# Why --top stays at 25 rather than scaling with the file, even though a reader of
+# a 291-function module found 25 too few:
+#
+# functions[] costs about 750 characters per entry on the sentinel sample, so
+# detailing every function of a 291-function file grows xray.json from ~56KB to
+# ~185KB. The whole point of this artifact is that an agent can read it instead
+# of the source, and tripling it defeats that -- the caller who needs more than
+# the top slice generally needs one specific function, which "xq show" answers
+# for a fraction of the cost.
+#
+# So the cap stays and the truncation is made impossible to miss instead:
+# summary.functions_detailed / functions_omitted carry the numbers, and a
+# confidence note says where the rest are. The failure being fixed was never
+# "25 is the wrong number" but "the reader could not tell 25 was not all of
+# them" -- someone read functions[] as the whole file and went to clean.js by
+# hand rather than re-running with a larger --top.
+
 # What to say when the file turns out to be a bytecode interpreter rather than
 # the logic a reader came for. Everything else this module produces is derived
 # from the interpreter's own AST, so the warning has to come before it, in the
@@ -676,7 +693,86 @@ def full_reachability(entries, wrapper_ids, by_id, tables):
     return seen
 
 
-def explain(structure, inline_meta=None, top=25):
+def deobfuscation_report(webcrack_meta=None, inline_meta=None):
+    """Report string inlining as the two passes it actually is.
+
+    The pipeline inlines strings twice: webcrack resolves the module-level string
+    array first, then inline_strings.py resolves the per-scope arrays webcrack
+    left behind. Publishing only the second pass under a bare "strings_inlined"
+    made a successful run read as a failed one -- webcrack had inlined 713
+    strings and the field said 0, so a reader concluded nothing was decoded and
+    went digging in webcrack.json to find out otherwise.
+
+    So each pass reports its own count under its own name, and the only
+    unqualified number is the total. No single figure here can be mistaken for
+    the whole story, because no single figure is presented as one.
+    """
+    passes = []
+    total = 0
+
+    if webcrack_meta:
+        changes = webcrack_meta.get("changes") or {}
+        # webcrack's own transform name for the step that substitutes decoded
+        # strings back into the source; the count is how many it replaced.
+        inlined = changes.get("inline-decoded-strings", 0) or 0
+        entry = {
+            "pass": "webcrack",
+            "strings_inlined": inlined,
+            "decoder_wrappers_inlined": changes.get("inline-decoder-wrappers", 0) or 0,
+            "ok": bool(webcrack_meta.get("ok")),
+        }
+        for key in ("string_array", "rotate", "encoding", "decoders"):
+            if webcrack_meta.get(key):
+                entry[key] = webcrack_meta[key]
+        if webcrack_meta.get("error"):
+            entry["error"] = webcrack_meta["error"]
+        passes.append(entry)
+        total += inlined
+
+    if inline_meta:
+        inlined = inline_meta.get("replaced", 0) or 0
+        passes.append({
+            "pass": "inline_strings",
+            "strings_inlined": inlined,
+            "unresolved": inline_meta.get("unresolved", 0),
+            "arrays": inline_meta.get("arrays", 0),
+            "decoders": len(inline_meta.get("decoders", []) or []),
+            "rolled_back": inline_meta.get("rolled_back", False),
+        })
+        total += inlined
+
+    if not passes:
+        return None
+    return {"strings_inlined_total": total, "passes": passes}
+
+
+def deobfuscation_note(deob):
+    """The caveat a two-pass count needs, or None when there is nothing to warn about.
+
+    Only emitted when the passes disagree in the direction that misled a reader
+    before: strings were inlined overall, but one pass contributed none of them.
+    That is the shape that reads as "nothing was decoded" if a reader stops at
+    the first number they see.
+    """
+    if not deob:
+        return None
+    passes = deob.get("passes") or []
+    if len(passes) < 2 or not deob.get("strings_inlined_total"):
+        return None
+    zero = [p["pass"] for p in passes if not p.get("strings_inlined")]
+    if not zero:
+        return None
+    return (
+        "String inlining ran in two passes and they report separately: %s. A zero "
+        "for %s does not mean nothing was decoded -- %d string(s) were inlined in "
+        "total. Read deobfuscation.strings_inlined_total for the whole picture."
+        % (", ".join("%s inlined %d" % (p["pass"], p.get("strings_inlined") or 0)
+                     for p in passes),
+           " and ".join(zero), deob["strings_inlined_total"])
+    )
+
+
+def explain(structure, inline_meta=None, top=25, webcrack_meta=None):
     by_id = build_index(structure)
     fns = structure.get("functions", []) or []
     tables = resolve_targets(structure, by_id)
@@ -764,11 +860,28 @@ def explain(structure, inline_meta=None, top=25):
         "Anonymous functions are attributed to the enclosing function by line "
         "containment, which is exact, but their call sites may be indirect.",
     ]
+    # functions[] is a ranked excerpt, not the file. A reader who takes it for the
+    # whole set concludes the module has 25 functions when it has 291, and stops
+    # looking -- which is what happened before this note existed. Only said when
+    # something was actually left out, so it stays a fact about this run.
+    omitted = max(len(fns) - len(functions_out), 0)
+    if omitted:
+        notes.append(
+            "functions[] holds the %d most important of %d functions, so %d are not "
+            "detailed here. They are not absent from the analysis: structure.json has "
+            "all of them, and \"xq find\" / \"xq show\" name and print any of them "
+            "(marked ~, meaning no published role). See summary.functions_detailed."
+            % (len(functions_out), len(fns), omitted))
     # A VM verdict invalidates every other note rather than qualifying it, so it
     # goes first: a reader who stops after one line has to have read this one.
     note = vm_note(vm_signals)
     if note:
         notes.insert(0, note)
+
+    deob = deobfuscation_report(webcrack_meta, inline_meta)
+    deob_note = deobfuscation_note(deob)
+    if deob_note:
+        notes.append(deob_note)
 
     out = {
         "schema": "js-xray/explanation/1",
@@ -776,6 +889,12 @@ def explain(structure, inline_meta=None, top=25):
         "size": {"lines": structure.get("lines"), "bytes": structure.get("bytes")},
         "summary": {
             "functions": len(fns),
+            # How many of those len(fns) functions functions[] actually details.
+            # Published unconditionally, including when nothing was truncated, so
+            # a reader comparing the two numbers never has to wonder whether a
+            # missing field means "not truncated" or "older run".
+            "functions_detailed": len(functions_out),
+            "functions_omitted": omitted,
             "classes": len(structure.get("classes", []) or []),
             "entry_points": len(entries),
             # Machine-readable verdict, so an agent can bail out on this field
@@ -797,14 +916,8 @@ def explain(structure, inline_meta=None, top=25):
         "vm_signals": vm_signals,
         "confidence_notes": notes,
     }
-    if inline_meta:
-        out["deobfuscation"] = {
-            "strings_inlined": inline_meta.get("replaced", 0),
-            "unresolved": inline_meta.get("unresolved", 0),
-            "arrays": inline_meta.get("arrays", 0),
-            "decoders": len(inline_meta.get("decoders", []) or []),
-            "rolled_back": inline_meta.get("rolled_back", False),
-        }
+    if deob:
+        out["deobfuscation"] = deob
     if structure.get("error"):
         out["error"] = structure["error"]
     return out
@@ -815,25 +928,42 @@ def main():
     ap.add_argument("structure", help="structure.json from structure.py")
     ap.add_argument("output", help="where to write the explanation json")
     ap.add_argument("--inline-meta", help="inline.json from the string-inlining pass")
+    ap.add_argument("--meta", help="webcrack.json from the first deobfuscation pass, "
+                                  "so the two inlining passes can be reported apart")
     ap.add_argument("--top", type=int, default=25, help="how many functions to detail")
     args = ap.parse_args()
 
     with open(args.structure, encoding="utf-8") as fh:
         structure = json.load(fh)
-    inline_meta = None
-    if args.inline_meta and os.path.isfile(args.inline_meta):
-        try:
-            with open(args.inline_meta, encoding="utf-8") as fh:
-                inline_meta = json.load(fh)
-        except Exception:
-            inline_meta = None
 
-    data = explain(structure, inline_meta, top=args.top)
+    def load_meta(path):
+        """A stage metadata file, or None. A missing or corrupt one must not stop
+        the explanation: it costs a line of the deobfuscation report, not the
+        analysis."""
+        if not path or not os.path.isfile(path):
+            return None
+        try:
+            with open(path, encoding="utf-8") as fh:
+                return json.load(fh)
+        except Exception:
+            return None
+
+    inline_meta = load_meta(args.inline_meta)
+    webcrack_meta = load_meta(args.meta)
+
+    data = explain(structure, inline_meta, top=args.top, webcrack_meta=webcrack_meta)
     with open(args.output, "w", encoding="utf-8") as fh:
         json.dump(data, fh, indent=2)
     s = data["summary"]
-    print("%d functions, %d entry points, %d flows, %d algorithms, %d network contracts" % (
-        s["functions"], s["entry_points"], len(data["flows"]),
+    detail = "%d functions" % s["functions"]
+    if s.get("functions_omitted"):
+        # Said on the pipeline's own log line too, not only inside the file: the
+        # truncation is the kind of thing a caller wants to see while the run is
+        # in front of them, when raising --top is still cheap.
+        detail += " (%d detailed, %d omitted by --top %d)" % (
+            s["functions_detailed"], s["functions_omitted"], args.top)
+    print("%s, %d entry points, %d flows, %d algorithms, %d network contracts" % (
+        detail, s["entry_points"], len(data["flows"]),
         len(data["porting"]["algorithms"]), len(data["porting"]["network_contracts"])))
     if s.get("vm_obfuscation") not in ("none", "unknown", None):
         # Loud on stderr as well as in the file: a run whose output does not

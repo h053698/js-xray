@@ -93,7 +93,8 @@ def main():
     ap.add_argument("--skip-anchors", action="store_true",
                     help="skip the keyword anchor pass")
     ap.add_argument("--top", type=int, default=25,
-                    help="how many functions to detail in xray.json")
+                    help="how many functions to detail in xray.json (the rest stay "
+                         "in structure.json and are reachable through xq)")
     ap.add_argument("--max-blocks", type=int, default=12)
     args = ap.parse_args()
 
@@ -209,7 +210,7 @@ def main():
 
     n += 1
     cmd = [sys.executable, os.path.join(HERE, "explain.py"), structure_json, explanation,
-           "--top", str(args.top)] + inline_arg
+           "--top", str(args.top)] + inline_arg + meta_arg
     label = "%d/%d explain" % (n, total)
     if not step(label, cmd, n=n, total=total, record=stages):
         return fail(label)

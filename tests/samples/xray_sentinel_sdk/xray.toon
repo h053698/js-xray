@@ -5,8 +5,11 @@ size:
   bytes: 38348
 summary:
   functions: 220
+  functions_detailed: 25
+  functions_omitted: 195
   classes: 1
   entry_points: 29
+  vm_obfuscation: unknown
   roles:
     unclassified: 165
     "lookup/decoder shim": 29
@@ -1337,10 +1340,24 @@ literals:
     "https://github.com/uuidjs/uuid#getrandomvalues-not-supported",115
     "https://chatgpt.com/backend-api/sentinel/",1035
   paths[2]: /sentinel/,/backend-api/sentinel/
-confidence_notes[3]: "Call edges are resolved by name, so a shadowed or reassigned identifier can point at the wrong function. Verify a flow against the source lines before relying on it.","Roles are inferred from AST facts listed under each role as evidence. Treat confidence \"low\" and \"none\" as a lead, not a finding.","Anonymous functions are attributed to the enclosing function by line containment, which is exact, but their call sites may be indirect."
+vm_signals:
+  verdict: unknown
+  score: 0
+  signals: []
+confidence_notes[4]: "Call edges are resolved by name, so a shadowed or reassigned identifier can point at the wrong function. Verify a flow against the source lines before relying on it.","Roles are inferred from AST facts listed under each role as evidence. Treat confidence \"low\" and \"none\" as a lead, not a finding.","Anonymous functions are attributed to the enclosing function by line containment, which is exact, but their call sites may be indirect.","functions[] holds the 25 most important of 220 functions, so 195 are not detailed here. They are not absent from the analysis: structure.json has all of them, and \"xq find\" / \"xq show\" name and print any of them (marked ~, meaning no published role). See summary.functions_detailed."
 deobfuscation:
-  strings_inlined: 487
-  unresolved: 0
-  arrays: 18
-  decoders: 21
-  rolled_back: false
+  strings_inlined_total: 497
+  passes[2]:
+    - pass: webcrack
+      strings_inlined: 10
+      decoder_wrappers_inlined: 12
+      ok: true
+      string_array: "o, length 8"
+      rotate: no
+      decoders: c
+    - pass: inline_strings
+      strings_inlined: 487
+      unresolved: 0
+      arrays: 18
+      decoders: 21
+      rolled_back: false

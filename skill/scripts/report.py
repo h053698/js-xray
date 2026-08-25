@@ -175,13 +175,31 @@ def render(data, args):
     L.append("| deobfuscated | " + BT + rel(args.clean, base) + BT + " |")
     L.append("| size | %s lines, %s bytes |" % (
         data.get("size", {}).get("lines"), data.get("size", {}).get("bytes")))
-    L.append("| functions | %s |" % s.get("functions"))
+    # Both numbers when they differ: the table is the first thing read, and a
+    # bare function count next to a shorter "Key functions" list invites the
+    # reader to assume the list is the whole file.
+    if s.get("functions_omitted"):
+        L.append("| functions | %s (%s detailed below, %s omitted by --top) |" % (
+            s.get("functions"), s.get("functions_detailed"), s.get("functions_omitted")))
+    else:
+        L.append("| functions | %s |" % s.get("functions"))
     L.append("| classes | %s |" % s.get("classes"))
     L.append("| entry points | %s |" % s.get("entry_points"))
     d = data.get("deobfuscation") or {}
     if d:
-        L.append("| strings inlined | %s resolved, %s unresolved |" % (
-            d.get("strings_inlined", 0), d.get("unresolved", 0)))
+        # Per pass, never as one number. A single "strings inlined: 0" here is
+        # exactly what made a successful deobfuscation read as a failed one: it
+        # was the second pass's figure, while webcrack had already inlined
+        # hundreds in the first. A run predating passes[] is labelled as the one
+        # pass it measured rather than presented as a total.
+        if "passes" in d:
+            L.append("| strings inlined | %s total: %s |" % (
+                d.get("strings_inlined_total", 0),
+                ", ".join("%s %s" % (p.get("pass"), p.get("strings_inlined", 0))
+                          for p in d.get("passes") or []) or "-"))
+        else:
+            L.append("| strings inlined (second pass only) | %s resolved, %s unresolved |"
+                     % (d.get("strings_inlined", 0), d.get("unresolved", 0)))
     L.append("")
 
     if data.get("error"):
@@ -251,7 +269,24 @@ def render(data, args):
     # ---- functions ----
     L.append("## Key functions")
     L.append("")
-    for fn in data.get("functions", [])[:args.max_functions]:
+    shown = data.get("functions", [])[:args.max_functions]
+    # Two separate truncations reach this list: explain.py published the top
+    # --top by importance, and this renderer prints the first --max-functions of
+    # those. Both are stated, because a reader cannot tell from the list itself
+    # that either happened.
+    total_fns = s.get("functions")
+    if total_fns and len(shown) < total_fns:
+        detailed = s.get("functions_detailed") or len(data.get("functions", []))
+        line = ("The %d most important of %d functions, ranked by importance."
+                % (len(shown), total_fns))
+        if detailed > len(shown):
+            line += (" xray.json details %d of them; this report prints %d."
+                     % (detailed, len(shown)))
+        line += (" The rest are in " + BT + "structure.json" + BT + " and answerable with "
+                 + BT + "xq find" + BT + " / " + BT + "xq show" + BT + ".")
+        L.append(line)
+        L.append("")
+    for fn in shown:
         header = "### " + fn["name"]
         if not fn.get("reachable_from_entry"):
             header += " (not reached from any entry point)"

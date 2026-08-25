@@ -19,12 +19,13 @@ structure.json -- the label comes from importing explain.display_name, the same
 function that produced the published names, rather than a second implementation
 of the same convention.
 
-The first argument names the run, and may be left out. An explicit .xrayjs
-directory always wins; a source file resolves to the <stem>.xrayjs beside it;
-nothing at all resolves to the single .xrayjs directory in the current one. Two
-candidates are reported rather than picked between -- answering the right
-question about the wrong file is the one failure a caller cannot detect from the
-answer.
+The first argument names the run, and may be left out. An explicit directory
+always wins; a source file resolves to the <stem>.xrayjs beside it; nothing at
+all resolves to the single run directory in the current one -- recognised by
+holding an xray.json or xray.toon, not by its name, so a run made with
+-o popup.xrayout is found like any other. Two candidates are reported rather
+than picked between -- answering the right question about the wrong file is the
+one failure a caller cannot detect from the answer.
 """
 import argparse
 import json
@@ -378,6 +379,35 @@ def pick(run, token, out):
 
 # ---------------------------------------------------------------- subcommands
 
+def render_deobfuscation(deob):
+    """The deobfuscation block as lines, per pass rather than as one figure.
+
+    Two shapes reach here. Current runs carry strings_inlined_total plus a
+    passes[] list; a run made before the two passes were reported apart carries a
+    single strings_inlined, which was the second pass's count alone. The older
+    shape is printed as what it is -- one pass, named -- instead of being summed
+    into a total it never measured, since that is precisely the reading that made
+    a successful deobfuscation look like a failed one.
+    """
+    if "passes" not in deob:
+        return ["deobfuscation (pre-two-pass run; second pass only): "
+                "%s strings inlined, %s unresolved, rolled_back=%s"
+                % (deob.get("strings_inlined"), deob.get("unresolved"),
+                   deob.get("rolled_back"))]
+    out = ["deobfuscation: %s strings inlined in total"
+           % deob.get("strings_inlined_total", 0)]
+    for p in deob.get("passes") or []:
+        bits = ["%s inlined" % p.get("strings_inlined", 0)]
+        if p.get("unresolved"):
+            bits.append("%s unresolved" % p["unresolved"])
+        if p.get("rolled_back"):
+            bits.append("rolled back")
+        if p.get("error"):
+            bits.append("error: %s" % p["error"])
+        out.append("  %-16s %s" % (p.get("pass"), ", ".join(bits)))
+    return out
+
+
 def cmd_summary(run, args):
     x = run.xray
     s = x.get("summary") or {}
@@ -395,6 +425,14 @@ def cmd_summary(run, args):
     out.append("functions %s   classes %s   entry_points %s   vm %s" % (
         s.get("functions"), s.get("classes"), s.get("entry_points"),
         s.get("vm_obfuscation") or "unknown"))
+    # The truncation, right under the count it qualifies. Without this the two
+    # numbers only exist in the JSON, and the reader of "functions 291" has no
+    # reason to suspect functions[] holds 25 of them.
+    if s.get("functions_omitted"):
+        out.append("  functions[] details %s of %s; %s omitted by --top. "
+                   "Use 'xq find' / 'xq show' for the rest (marked ~)."
+                   % (s.get("functions_detailed"), s.get("functions"),
+                      s.get("functions_omitted")))
     roles = s.get("roles") or {}
     named = [(k, v) for k, v in roles.items() if k != "unclassified"]
     if named:
@@ -413,9 +451,7 @@ def cmd_summary(run, args):
     deob = x.get("deobfuscation") or {}
     if deob:
         out.append("")
-        out.append("deobfuscation: %s strings inlined, %s unresolved, rolled_back=%s"
-                   % (deob.get("strings_inlined"), deob.get("unresolved"),
-                      deob.get("rolled_back")))
+        out.extend(render_deobfuscation(deob))
     notes = x.get("confidence_notes") or []
     if notes:
         out.append("")
@@ -998,19 +1034,25 @@ class Ambiguous(Exception):
     """
 
 
-def _xrayjs_dirs(where):
-    """The .xrayjs directories directly inside 'where', sorted.
+def _run_dirs(where):
+    """The run directories directly inside 'where', sorted.
+
+    A run is recognised by what it contains, not by what it is called: -o accepts
+    any output directory, so a run made as "popup.xrayout" is as much a run as
+    "popup.xrayjs" and used to be invisible to this search. The test is the same
+    _looks_like_run() that resolves a subcommand/directory name collision, so
+    both places agree on what a run is.
 
     One level only. Recursing would make the cost of typing "xq summary" depend
     on the size of the tree below the cwd, and would silently reach runs the
-    caller cannot see in an ls.
+    caller cannot see in an ls -- including anything vendored under node_modules.
     """
     try:
         names = os.listdir(where)
     except OSError:
         return []
     return sorted(os.path.join(where, n) for n in names
-                  if n.endswith(SUFFIX) and os.path.isdir(os.path.join(where, n)))
+                  if _looks_like_run(os.path.join(where, n)))
 
 
 def resolve_target(spec, cwd=None):
@@ -1021,7 +1063,12 @@ def resolve_target(spec, cwd=None):
          worked before working, including plain directories the tests build by
          hand, and lets an explicit path win over a subcommand of the same name
       2. a file path: the sibling <stem>.xrayjs
-      3. no path at all: the one .xrayjs in the cwd, or a refusal
+      3. no path at all: the one run directory in the cwd, or a refusal
+
+    Step 3 refuses whenever more than one candidate exists, and widening what
+    counts as a candidate makes that refusal more likely, not less -- which is
+    the intended trade. Answering the right question about the wrong run is the
+    one failure the caller cannot detect from the answer.
     """
     cwd = cwd or os.getcwd()
     if spec is not None:
@@ -1039,16 +1086,17 @@ def resolve_target(spec, cwd=None):
         # neither: report it as the path it looks like, not as a bad subcommand
         raise Missing("no such file or directory: %s" % spec)
 
-    found = _xrayjs_dirs(cwd)
+    found = _run_dirs(cwd)
     if len(found) == 1:
-        return found[0], "the only %s here" % SUFFIX
+        return found[0], "the only run directory here"
     if not found:
         raise Missing(
-            "no %s directory in %s. Name one explicitly, or run: python3 "
-            "skill/scripts/xray.py <file>.js" % (SUFFIX, cwd))
+            "no run directory in %s -- nothing here ends in %s or contains an "
+            "xray.json. Name one explicitly, or run: python3 "
+            "skill/scripts/xray.py <file>.js" % (cwd, SUFFIX))
     raise Ambiguous(
-        "%d %s directories in %s -- name the one you mean:\n%s"
-        % (len(found), SUFFIX, cwd,
+        "%d run directories in %s -- name the one you mean:\n%s"
+        % (len(found), cwd,
            "\n".join("  " + os.path.basename(p) for p in found)))
 
 
@@ -1090,8 +1138,9 @@ def build_parser():
         usage="xq [TARGET] [--json] <subcommand> [args]",
         description="Query an .xrayjs directory one answer at a time, instead of "
                     "re-reading all of xray.json for every question.",
-        epilog="TARGET is an .xrayjs directory, or the .js file beside one. Omit it "
-               "to use the only .xrayjs directory in the current directory; when "
+        epilog="TARGET is a run directory, or the .js file beside one. Omit it to "
+               "use the only run directory in the current directory -- any directory "
+               "holding an xray.json or xray.toon counts, whatever -o named it; when "
                "there are several, xq lists them instead of choosing.")
     # TARGET is deliberately not a positional here: an optional positional in
     # front of subparsers swallows the subcommand name, so split_target() removes

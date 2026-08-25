@@ -175,6 +175,153 @@ def test_pipeline_end_to_end():
         check("explain stage meta is a raw string", isinstance(stages[4].get("meta"), str), stages[4].get("meta"))
 
 
+def test_deobfuscation_reports_both_passes():
+    """Neither inlining pass may be published as if it were the whole story.
+
+    sample_obfuscated.js is the exact shape that misled a reader: webcrack
+    resolves the module-level string array in the first pass, and inline_strings
+    finds no per-scope arrays left, so the second pass legitimately reports 0.
+    Published as a bare "strings_inlined: 0" that read as "nothing was decoded",
+    and the reader went to webcrack.json to discover 26 strings had been inlined
+    after all. Both numbers have to be visible, each labelled with the pass it
+    came from.
+    """
+    print("deobfuscation reports both passes")
+    fixture = os.path.join(ROOT, "fixtures", "sample_obfuscated.js")
+    if not os.path.isfile(fixture):
+        check("fixture present for two-pass reporting", False, fixture)
+        return
+    outdir = tempfile.mkdtemp(prefix="jsxray_deob_")
+    try:
+        proc = subprocess.run(
+            [sys.executable, os.path.join(SCRIPTS, "xray.py"), fixture, "-o", outdir],
+            capture_output=True, text=True)
+        check("two-pass run exits 0", proc.returncode == 0, proc.stderr[-300:])
+
+        wc = json.load(open(os.path.join(outdir, "webcrack.json")))
+        inline = json.load(open(os.path.join(outdir, "inline.json")))
+        wc_inlined = (wc.get("changes") or {}).get("inline-decoded-strings", 0)
+        second = inline.get("replaced", 0)
+        # the premise of this test: the fixture really does split this way
+        check("fixture exercises the misleading case: webcrack > 0, second pass 0",
+              wc_inlined > 0 and second == 0, (wc_inlined, second))
+
+        data = json.load(open(os.path.join(outdir, "xray.json")))
+        deob = data.get("deobfuscation") or {}
+        check("deobfuscation block present", bool(deob), deob)
+        by_pass = {p.get("pass"): p for p in deob.get("passes") or []}
+        check("both passes are reported separately",
+              set(by_pass) == {"webcrack", "inline_strings"}, list(by_pass))
+        check("the webcrack pass carries webcrack's own count",
+              by_pass.get("webcrack", {}).get("strings_inlined") == wc_inlined,
+              (by_pass.get("webcrack"), wc_inlined))
+        check("the second pass carries its own count",
+              by_pass.get("inline_strings", {}).get("strings_inlined") == second,
+              (by_pass.get("inline_strings"), second))
+        check("the total is the sum of the passes",
+              deob.get("strings_inlined_total") == wc_inlined + second,
+              (deob.get("strings_inlined_total"), wc_inlined, second))
+        # the regression proper: no unqualified field may still say 0 here
+        check("no bare strings_inlined survives at the block root",
+              "strings_inlined" not in deob, list(deob))
+
+        # ...and a reader who only skims the caveats is told the same thing
+        notes = " ".join(data.get("confidence_notes") or [])
+        check("a caveat explains the zero pass",
+              "two passes" in notes and "does not mean nothing was decoded" in notes,
+              notes[-300:])
+
+        # both human-facing views agree with the file
+        rep = open(os.path.join(outdir, "report.md")).read()
+        check("report.md shows the total and both passes",
+              ("%s total" % (wc_inlined + second)) in rep
+              and "webcrack %d" % wc_inlined in rep
+              and "inline_strings %d" % second in rep,
+              [l for l in rep.splitlines() if "strings inlined" in l])
+
+        proc = subprocess.run(
+            [sys.executable, os.path.join(SCRIPTS, "xq.py"), outdir, "summary"],
+            capture_output=True, text=True)
+        check("xq summary shows the total, not one pass's figure",
+              "%d strings inlined in total" % (wc_inlined + second) in proc.stdout,
+              proc.stdout[-300:])
+        check("xq summary names each pass",
+              "webcrack" in proc.stdout and "inline_strings" in proc.stdout,
+              proc.stdout[-300:])
+    finally:
+        shutil.rmtree(outdir, ignore_errors=True)
+
+
+def test_truncated_functions_are_visible():
+    """functions[] is an excerpt, and the artifact has to say so.
+
+    The default --top 25 is kept deliberately -- detailing every function of a
+    291-function file roughly triples xray.json, which defeats the point of an
+    artifact an agent reads instead of the source. What was wrong was not the
+    number but that nothing marked it as a cut: a reader took functions[] for the
+    whole file and read clean.js by hand rather than raising --top or asking xq.
+    """
+    print("truncation is visible in the outputs")
+    struct = os.path.join(ROOT, "tests", "samples", "xray_sentinel_sdk", "structure.json")
+    if not os.path.isfile(struct):
+        check("structure.json present for truncation test", False, struct)
+        return
+    total = len(json.load(open(struct)).get("functions") or [])
+    check("the sample has more functions than --top", total > 25, total)
+
+    tmp = tempfile.mkdtemp(prefix="jsxray_top_")
+    try:
+        out = os.path.join(tmp, "xray.json")
+        proc = subprocess.run(
+            [sys.executable, os.path.join(SCRIPTS, "explain.py"), struct, out, "--top", "5"],
+            capture_output=True, text=True)
+        check("explain exits 0 when truncating", proc.returncode == 0, proc.stderr[-300:])
+        # the run's own log line says it, while raising --top is still cheap
+        check("the stage log states the truncation",
+              "5 detailed" in proc.stdout and "omitted" in proc.stdout, proc.stdout)
+
+        data = json.load(open(out))
+        s = data["summary"]
+        check("summary.functions stays the whole count", s["functions"] == total,
+              (s["functions"], total))
+        check("summary says how many are detailed", s["functions_detailed"] == 5,
+              s.get("functions_detailed"))
+        check("summary says how many were left out",
+              s["functions_omitted"] == total - 5, s.get("functions_omitted"))
+        check("functions[] really holds only that many", len(data["functions"]) == 5,
+              len(data["functions"]))
+        notes = " ".join(data.get("confidence_notes") or [])
+        check("a caveat points at structure.json and xq for the rest",
+              "structure.json" in notes and "xq find" in notes
+              and ("%d functions" % total) in notes, notes[-320:])
+
+        # and when nothing was cut, the fields are still there and say zero, so
+        # the reader never has to guess whether a missing field means "not cut"
+        full = os.path.join(tmp, "full.json")
+        subprocess.run([sys.executable, os.path.join(SCRIPTS, "explain.py"), struct,
+                        full, "--top", str(total)], capture_output=True, text=True)
+        fs = json.load(open(full))["summary"]
+        check("an untruncated run reports zero omitted",
+              fs["functions_omitted"] == 0 and fs["functions_detailed"] == total,
+              (fs.get("functions_omitted"), fs.get("functions_detailed")))
+        fnotes = " ".join(json.load(open(full)).get("confidence_notes") or [])
+        check("an untruncated run does not claim a truncation",
+              "not detailed here" not in fnotes, fnotes[-200:])
+
+        # xq surfaces it next to the count it qualifies
+        run = os.path.join(tmp, "run.xrayjs")
+        os.makedirs(run)
+        shutil.copy(out, os.path.join(run, "xray.json"))
+        proc = subprocess.run(
+            [sys.executable, os.path.join(SCRIPTS, "xq.py"), run, "summary"],
+            capture_output=True, text=True)
+        check("xq summary states the truncation under the function count",
+              "details 5 of %d" % total in proc.stdout and "xq show" in proc.stdout,
+              proc.stdout[:400])
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def test_default_outdir_naming():
     """Default output dir must be <stem>.xrayjs/ next to the input, and an
     explicit -o override must still be honoured verbatim (DEC-003 / REQ-001)."""
@@ -1799,6 +1946,60 @@ def test_xq_resolves_its_target():
         check("the cwd search does not recurse", proc.returncode != 0
               and "buried" not in proc.stdout, (proc.returncode, proc.stdout[:120]))
 
+        # a run directory -o named something else is still a run. Recognising it
+        # by name meant "-o popup.xrayout" was invisible to the cwd search and the
+        # caller went back to typing full paths.
+        renamed = os.path.join(tmp, "renamed")
+        os.makedirs(renamed)
+        shutil.copytree(SAMPLE_XRAYJS, os.path.join(renamed, "popup.xrayout"))
+        proc = run_xq_in(renamed, "summary")
+        check("a run directory not named .xrayjs resolves from the cwd",
+              proc.returncode == 0 and "functions 220" in proc.stdout,
+              (proc.returncode, proc.stdout[:120], proc.stderr[:200]))
+        check("the differently-named run is the one announced",
+              "popup.xrayout" in proc.stderr, proc.stderr[:200])
+
+        # the safety this widening makes more important, not less: broadening what
+        # counts as a candidate can only produce more candidates, and two of them
+        # must still be a refusal rather than a guess
+        mixed = os.path.join(tmp, "mixed")
+        os.makedirs(mixed)
+        shutil.copytree(SAMPLE_XRAYJS, os.path.join(mixed, "popup.xrayout"))
+        shutil.copytree(SAMPLE_XRAYJS, os.path.join(mixed, "other.xrayjs"))
+        proc = run_xq_in(mixed, "summary")
+        check("two candidates of different names still exit 3",
+              proc.returncode == 3, proc.returncode)
+        check("both differently-named candidates are listed",
+              "popup.xrayout" in proc.stderr and "other.xrayjs" in proc.stderr,
+              proc.stderr[:200])
+        check("the widened search still answers nothing when ambiguous",
+              proc.stdout == "", proc.stdout[:200])
+        proc = run_xq_in(mixed, "popup.xrayout", "summary")
+        check("naming the -o directory resolves the ambiguity",
+              proc.returncode == 0 and "functions 220" in proc.stdout, proc.stdout[:120])
+
+        # two run directories that share nothing but their contents: the rule is
+        # "holds an explanation artifact", so neither name matters
+        pairless = os.path.join(tmp, "pairless")
+        os.makedirs(pairless)
+        for name in ("out1", "out2"):
+            shutil.copytree(SAMPLE_XRAYJS, os.path.join(pairless, name))
+        proc = run_xq_in(pairless, "summary")
+        check("suffix-less candidates are found and still refused",
+              proc.returncode == 3 and "out1" in proc.stderr and "out2" in proc.stderr,
+              (proc.returncode, proc.stderr[:200]))
+
+        # ...and an ordinary directory that holds no explanation is not a candidate,
+        # so a source tree beside one run does not turn into an ambiguity
+        oneplus = os.path.join(tmp, "oneplus")
+        os.makedirs(os.path.join(oneplus, "src"))
+        os.makedirs(os.path.join(oneplus, "node_modules"))
+        shutil.copytree(SAMPLE_XRAYJS, os.path.join(oneplus, "only.xrayout"))
+        proc = run_xq_in(oneplus, "summary")
+        check("directories without an explanation are not candidates",
+              proc.returncode == 0 and "only.xrayout" in proc.stderr,
+              (proc.returncode, proc.stderr[:200]))
+
         # a directory named after a subcommand: the path wins, and when that leaves
         # no command to run, the collision is explained rather than reported as a
         # missing argument
@@ -2145,6 +2346,8 @@ def main():
     test_wrapper_inlining_improves_classification()
     test_deflatten_regression_on_existing_fixtures()
     test_pipeline_end_to_end()
+    test_deobfuscation_reports_both_passes()
+    test_truncated_functions_are_visible()
     test_default_outdir_naming()
     test_custom_anchors()
     test_graceful_on_plain_file()

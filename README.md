@@ -108,11 +108,13 @@ its source from `clean.js`, so "what is this function" is a single command. Text
 by default, `--json` for scripting.
 
 The directory argument is optional, because typing it is the overhead the tool
-exists to remove: an explicit `.xrayjs` path still works, a `.js` path resolves to
-the run beside it, and omitting it uses the single `.xrayjs` directory in the
-current one. When there is more than one, `xq` lists them and exits instead of
-choosing - a correct answer about the wrong file is the one mistake a caller has
-no way to notice. Which run answered goes to stderr, so stdout stays parseable.
+exists to remove: an explicit path still works, a `.js` path resolves to the run
+beside it, and omitting it uses the single run directory in the current one. A run
+directory is one holding an `xray.json` or `xray.toon`, whatever `-o` named it, so
+a run written to `popup.xrayout` is found the same as `popup.xrayjs`. When there is
+more than one, `xq` lists them and exits 3 instead of choosing - a correct answer
+about the wrong file is the one mistake a caller has no way to notice. Which run
+answered goes to stderr, so stdout stays parseable.
 
 It adds no stage and re-derives nothing - every value comes from an artifact, so
 `xq` and `xray.json` cannot give different answers. A test asserts exactly that:

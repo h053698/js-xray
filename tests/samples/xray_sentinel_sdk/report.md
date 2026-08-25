@@ -2,13 +2,13 @@
 
 | | |
 |---|---|
-| source | `../sentinel_sdk.js` |
+| source | `clean.js` |
 | deobfuscated | `clean.js` |
 | size | 1352 lines, 38348 bytes |
-| functions | 220 |
+| functions | 220 (25 detailed below, 195 omitted by --top) |
 | classes | 1 |
 | entry points | 29 |
-| strings inlined | 487 resolved, 0 unresolved |
+| strings inlined | 497 total: webcrack 10, inline_strings 487 |
 
 ## What this module does
 
@@ -152,6 +152,8 @@ Entry at line 748 - function with no in-file caller.
 - `Pt.serialize` (L748) - validation/error path
 
 ## Key functions
+
+The 15 most important of 220 functions, ranked by importance. xray.json details 25 of them; this report prints 15. The rest are in `structure.json` and answerable with `xq find` / `xq show`.
 
 ### on
 
@@ -425,5 +427,6 @@ Textual matches from the anchor pass, useful as a cross-check on the AST finding
 - Call edges are resolved by name, so a shadowed or reassigned identifier can point at the wrong function. Verify a flow against the source lines before relying on it.
 - Roles are inferred from AST facts listed under each role as evidence. Treat confidence "low" and "none" as a lead, not a finding.
 - Anonymous functions are attributed to the enclosing function by line containment, which is exact, but their call sites may be indirect.
+- functions[] holds the 25 most important of 220 functions, so 195 are not detailed here. They are not absent from the analysis: structure.json has all of them, and "xq find" / "xq show" name and print any of them (marked ~, meaning no published role). See summary.functions_detailed.
 
 The machine-readable form of everything above is in `xray.json`, and the raw AST facts are in `structure.json`.

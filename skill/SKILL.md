@@ -149,7 +149,8 @@ is not installed (`sh scripts/install-xq.sh`).
 | "Which functions hash / fingerprint / send?" | `xq roles hash`, or `xq roles` for the histogram |
 | "What did the pipeline actually do on this run? Did anything fail or degrade?" | `pipeline.json` - each stage's `ok`, `meta`, and `cmd` in order, no source reading required |
 | "Why does `xray.json` look empty/degraded?" | `pipeline.json` for which stage failed, then that stage's raw stdout/stderr; `confidence_notes[]` in `xray.json` for caveats |
-| "Is the string-array deobfuscation trustworthy?" | `webcrack.json` (`"string array"`, `decoders`) and `inline.json` (`unresolved`, `rolled_back`) |
+| "Is the string-array deobfuscation trustworthy?" | `xray.json` -> `deobfuscation` first: `strings_inlined_total` plus one entry per pass. Then `webcrack.json` (`"string array"`, `decoders`) and `inline.json` (`unresolved`, `rolled_back`) for the raw stage output |
+| "Are these all the functions?" | `xray.json` -> `summary.functions` vs `summary.functions_detailed`. When they differ, `functions[]` is the top `--top` by importance; `xq find` / `xq show` reach the rest |
 | "Is any of `clean.js` still flattened, or did anything get removed?" | `deflatten.json` - what was dropped, linearised or inlined, and `switch_skips`/`dead_branch_skips`/`wrapper_skips` for what was left alone and why; diff `inline.js` against `clean.js` to see the exact change |
 | "Can I trust these findings as the module's real logic at all?" | `xray.json` -> `summary.vm_obfuscation`; anything but `none` means the analysis describes a bytecode interpreter, with the evidence in `vm_signals` |
 | "I need the facts but I'm token-constrained" | `xq` for a specific question - always try this first; `xray.toon` (+ `toon_stats.json`) only when you genuinely need all of it. Never slice `clean.js` by hand for this |
@@ -184,7 +185,13 @@ over reading line ranges yourself.
 Useful flags:
 
 - `-o DIR` output directory
-- `--top N` how many functions to detail in `xray.json` (default 25)
+- `--top N` how many functions to detail in `xray.json` (default 25). The default
+  is deliberately small -- each detailed function costs roughly 750 characters, so
+  detailing all of a 291-function file triples `xray.json` and defeats the point of
+  an artifact you read instead of the source. Nothing is lost when it truncates:
+  `summary.functions_detailed` / `functions_omitted` report the cut, a
+  `confidence_notes` entry says where the rest are, and `xq` answers for any of
+  them. Raise it only when you need the omitted functions *classified*.
 - `--skip-anchors` skip the keyword pass; faster, and `xray.json` is unaffected
 - `--skip-deobfuscate` analyze the file as-is (already-readable source)
 - `--skip-inline` skip the second-pass string inlining
@@ -208,6 +215,11 @@ Read in this order:
    path. Mention them together instead of repeating the flow.
 4. `functions[]` - detail for the highest-`importance` functions, when someone
    asks about a specific one.
+   This is an excerpt, not the file: compare `summary.functions_detailed` against
+   `summary.functions`. When they differ, `functions_omitted` says by how much and
+   a `confidence_notes` entry repeats it. The omitted functions are still in
+   `structure.json` and still answerable through `xq find` / `xq show` -- never
+   report `functions[]` as the module's full function list.
 
 `entry_points[]` lists more entries than there are flows; only the top ones are
 traced (`traced: true`). `why` says what made it an entry point, and entries that
@@ -289,12 +301,20 @@ in three steps.
 | --- | --- |
 | `xq name.xrayjs show on` | that directory, exactly as before |
 | `xq name.js show on` | the `name.xrayjs` beside the source file |
-| `xq show on` | the one `.xrayjs` directory in the current directory |
+| `xq show on` | the one run directory in the current directory |
 
-The cwd search looks one level down, no deeper. Two candidates there makes `xq`
-list them and exit non-zero rather than choose - a right answer about the wrong
-file is indistinguishable from a right answer, so it is never guessed. The run it
-settled on goes to stderr; stdout stays the answer alone, `--json` included.
+A "run directory" is recognised by holding an `xray.json` or `xray.toon`, not by
+its name: `-o popup.xrayout` produces a run `xq` finds like any other, and a
+directory with no explanation artifact in it is never a candidate. The cwd search
+looks one level down, no deeper, so its cost does not grow with the tree below
+you and it cannot reach anything vendored under `node_modules`.
+
+Two candidates there makes `xq` list them and exit 3 rather than choose - a right
+answer about the wrong file is indistinguishable from a right answer, so it is
+never guessed. Recognising runs by content finds more candidates than matching on
+the name did, which makes that refusal more common, not less: name the one you
+mean when it happens. The run `xq` settled on goes to stderr; stdout stays the
+answer alone, `--json` included.
 
 | subcommand | answers |
 | --- | --- |
@@ -361,10 +381,12 @@ answer from `xray.json` cannot disagree - a query tool that made its own
 judgements would be worse than no query tool, because the caller who skipped
 `xray.json` has nothing to check it against. Two consequences worth knowing:
 
-- `xray.json` details only its top `--top` functions (25 by default). `find` and
-  `show` still answer for the rest, marked `~`, but with a name, a line range and
-  source only - there is no role or importance to report, and `xq` does not invent
-  one. Raise `--top` and re-run the pipeline if you need them classified.
+- `xray.json` details only its top `--top` functions (25 by default), and says so:
+  `summary.functions_detailed` against `summary.functions`, repeated in
+  `confidence_notes` and in `xq summary`'s output. `find` and `show` still answer
+  for the rest, marked `~`, but with a name, a line range and source only - there
+  is no role or importance to report, and `xq` does not invent one. Raise `--top`
+  and re-run the pipeline if you need them classified.
 - An unknown `schema` value, a run with neither `xray.toon` nor `xray.json`, or a
   missing `structure.json` under `callers` is an error naming the file, not a
   quiet empty answer. An `xray.toon` that no longer parses is reported with the
@@ -387,7 +409,12 @@ would otherwise never see the verdict.
 schema           "js-xray/explanation/1"
 source_file      path analyzed (clean.js, unless deobfuscation was skipped)
 size             {lines, bytes}
-summary          {functions, classes, entry_points, roles{name:count}, endpoints[]}
+summary          {functions, functions_detailed, functions_omitted, classes,
+                 entry_points, roles{name:count}, endpoints[]}
+                 functions is every function found; functions_detailed is how many
+                 of them functions[] describes, and functions_omitted the
+                 difference. All three are always present, so a zero means "not
+                 truncated" rather than "older run"
                  plus vm_obfuscation: "vm-obfuscated" | "suspected" | "none" |
                  "unknown" -- check this first; when it is not "none" the rest of
                  the file describes a bytecode interpreter, not the module
@@ -414,7 +441,17 @@ vm_signals       {verdict, score, signals[]} -- the evidence behind
                  score is 0-100 weighted by which signals matched (the two core
                  ones alone reach 70); signals[] is {kind, detail, line} per
                  matched signal, so the dispatch loop can be found by hand
-deobfuscation    {strings_inlined, unresolved, arrays, decoders, rolled_back}
+deobfuscation    {strings_inlined_total, passes[]} -- string inlining runs twice
+                 and each pass reports separately, because publishing one figure
+                 alone made a run where WebCrack inlined 713 strings and the
+                 second pass inlined 0 read as "nothing was decoded".
+                 strings_inlined_total is the only unqualified number.
+  passes[]       {pass, strings_inlined, ...}. pass is "webcrack" (also
+                 decoder_wrappers_inlined, ok, string_array?, rotate?, encoding?,
+                 decoders?, error?) or "inline_strings" (also unresolved, arrays,
+                 decoders, rolled_back). Present only for the passes that ran.
+                 Runs made before this split carry a single strings_inlined
+                 instead, which was the second pass's count alone.
 confidence_notes[]  caveats that apply to the whole file
 ```
 
