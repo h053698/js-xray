@@ -21,6 +21,20 @@
 // closes exactly that gap: it resolves the deciding value through the storage
 // object, scope-correctly, and then does what webcrack would have done.
 //
+// The same storage object also holds pure call forwarders:
+//
+//     const S = { DmnGW: function (a, b, c) { return a(b, c); } };
+//     S.DmnGW(fetch, url, opts);          // i.e. fetch(url, opts)
+//
+// Those are not a control-flow problem, they are a *visibility* problem: every
+// consumer downstream that matches on call text sees `S.DmnGW`, not `fetch`, so
+// explain.py's role classifier finds no marker calls and reports a file of
+// unclassified functions. Rewriting them is the third transform below, and it
+// belongs in this pass rather than a stage of its own: it needs the same
+// scope-correct storage-object resolution, the same closed-object judgement and
+// the same rollback gate, and it has to run before structure and explain to be
+// worth anything at all.
+//
 // The governing constraint is that a wrong decision here is invisible. Dropping
 // the live branch instead of the dead one, or reordering cases that are not
 // independent, still produces valid JavaScript -- so `node --check` and every
@@ -53,6 +67,34 @@ const FUNCTION_TYPES = new Set([
 const MAX_PASSES = 6;
 const SEQ_RE = /^[0-9]+([|][0-9]+)*$/;
 const LABEL_RE = /^[0-9]+$/;
+
+// Namespace.method pairs that are `this`-independent by specification, so
+// calling them unbound and calling them off their namespace are the same
+// operation. This table is the one place in the pass where a fact is asserted
+// from the language spec rather than proved from the AST, so it is deliberately a
+// short list of documented statics rather than a rule about member expressions.
+//
+// It exists because refusing every member callee would refuse most of what this
+// transform is for: a forwarder carrying JSON.stringify or Math.random is the
+// common case, and those are exactly the calls the downstream role classifier
+// matches on. What it must not grow to include is anything whose receiver is
+// load-bearing -- document.getElementById, crypto.subtle.digest and the rest of
+// the platform's branded methods throw "Illegal invocation" when called unbound,
+// which is also why obfuscated code never routes them through a forwarder.
+const THIS_FREE_STATICS = new Set([
+  "JSON.parse", "JSON.stringify",
+  "Math.random", "Math.floor", "Math.ceil", "Math.round", "Math.abs",
+  "Math.min", "Math.max", "Math.pow", "Math.imul", "Math.sqrt", "Math.log",
+  "Date.now", "Date.parse", "Date.UTC",
+  "Object.keys", "Object.values", "Object.entries", "Object.assign",
+  "Object.freeze", "Object.create", "Object.defineProperty",
+  "Object.getPrototypeOf", "Object.getOwnPropertyNames",
+  "Array.isArray", "Array.from", "Array.of",
+  "String.fromCharCode", "String.fromCodePoint", "String.raw",
+  "Number.isNaN", "Number.isFinite", "Number.isInteger",
+  "Number.parseInt", "Number.parseFloat",
+  "Buffer.from",
+]);
 
 function parseSource(code) {
   const modes = ["unambiguous", "script", "module"];
@@ -164,6 +206,18 @@ function memberTarget(path, node) {
   const obj = safeObjectLiteral(path, node.object.name);
   if (!obj) return undefined;
   return propertyValue(obj, key);
+}
+
+// "JSON.stringify" for a plain two-level, non-computed member read; null for
+// anything deeper, computed, or optional. Deliberately strict: this feeds a
+// table lookup that grants an exception, so an approximate match is worse than
+// no match.
+function staticMemberPath(node) {
+  if (!node || node.type !== "MemberExpression") return null;
+  if (node.computed || node.optional) return null;
+  if (node.object.type !== "Identifier") return null;
+  if (!node.property || node.property.type !== "Identifier") return null;
+  return node.object.name + "." + node.property.name;
 }
 
 function literalValue(node) {
@@ -479,6 +533,167 @@ function dropDeadBranches(ast, stats) {
   });
   return changed;
 }
+
+// ---------------------------------------------------------------------------
+// (c) pure pass-through call wrappers
+// ---------------------------------------------------------------------------
+
+// javascript-obfuscator also routes ordinary calls through the same storage
+// object, as a property holding nothing but a forwarder:
+//
+//     const S = { DmnGW: function (a, b, c) { return a(b, c); } };
+//     S.DmnGW(fetch, url, opts);
+//
+// The call is `fetch(url, opts)`. Left in place it is invisible to every
+// consumer that matches on call text -- explain.py's role classifier reads
+// fn.calls looking for fetch / JSON.stringify / crypto.subtle / atob, and a file
+// whose real calls all sit behind forwarders classifies as almost entirely
+// "(unclassified)". That is why this lives here, ahead of structure and explain:
+// the point is to change what those stages can see.
+//
+// The danger is the mirror image of the dead-branch danger. Rewriting a wrapper
+// that is not a pure forwarder -- one that swaps arguments, binds `this`, or does
+// anything besides forward -- produces valid JavaScript describing a call that
+// never happened, and explain would then report a finding that was manufactured
+// by this pass. A residual unclassified function is a far cheaper mistake, so
+// every rule below refuses rather than guesses (RSK-006).
+
+// Structural test for a forwarder, mirroring comparisonOperatorOf(): the body
+// must be *exactly* `return p0(p1, p2, ...)` over plain identifier parameters
+// passed in their declared order. A function of that shape holds no state,
+// observes nothing, and reorders nothing, so calling it is indistinguishable
+// from writing the call out. Returns { arity } or { reason }.
+function forwarderShapeOf(fnNode) {
+  if (!fnNode) return { reason: null };
+  if (fnNode.type !== "FunctionExpression" && fnNode.type !== "ArrowFunctionExpression") {
+    return { reason: null };
+  }
+
+  let expr = fnNode.body;
+  if (expr && expr.type === "BlockStatement") {
+    const body = expr.body;
+    if (body.length !== 1 || body[0].type !== "ReturnStatement") return { reason: null };
+    expr = body[0].argument;
+  }
+  // Only a bare `return <call>` is even a candidate; anything else is not the
+  // shape this pass is about and is not counted as a refusal.
+  if (!expr || expr.type !== "CallExpression") return { reason: null };
+
+  // From here on the node looks like a forwarder, so every exit is a recorded
+  // refusal rather than a silent non-match.
+  if (fnNode.async || fnNode.generator) return { reason: "wrapper is async or a generator" };
+
+  const params = fnNode.params;
+  if (!params.length) return { reason: "wrapper takes no callee parameter" };
+  const names = [];
+  for (const p of params) {
+    // rest, default and destructuring parameters all break the 1:1 mapping
+    // between call arguments and forwarded arguments
+    if (p.type !== "Identifier") return { reason: "wrapper parameter is not a plain identifier" };
+    if (names.indexOf(p.name) >= 0) return { reason: "wrapper duplicates a parameter name" };
+    names.push(p.name);
+  }
+
+  // `return a.call(x, b)` / `a.apply(...)` / `a.b(c)`: a method call binds a
+  // receiver, so it is not equivalent to calling the value that was passed in.
+  if (!expr.callee || expr.callee.type !== "Identifier") {
+    return { reason: "wrapper forwards through a method call (this binding)" };
+  }
+  if (expr.callee.name !== names[0]) {
+    return { reason: "wrapper callee is not its first parameter" };
+  }
+  if (expr.arguments.length !== params.length - 1) {
+    return { reason: "wrapper forwards a different number of arguments" };
+  }
+  for (let i = 0; i < expr.arguments.length; i += 1) {
+    const arg = expr.arguments[i];
+    // exact order, no transformation, no extra literals, no spread
+    if (!arg || arg.type !== "Identifier" || arg.name !== names[i + 1]) {
+      return { reason: "wrapper reorders, drops or transforms its parameters" };
+    }
+  }
+  return { arity: params.length };
+}
+
+function inlineWrappers(ast, stats) {
+  let changed = 0;
+  traverse(ast, {
+    CallExpression: {
+      exit(path) {
+        const node = path.node;
+        const callee = node.callee;
+        if (!callee) return;
+        // A plain member read on a storage object, or a const-bound function
+        // expression. Optional calls and optional members are left alone: their
+        // short-circuit is another thing that would have to be preserved.
+        if (callee.type !== "MemberExpression" && callee.type !== "Identifier") return;
+        if (callee.type === "MemberExpression" && callee.optional) return;
+
+        // resolveFunctionNode() is the same lookup the comparison-helper path
+        // uses, so the "closed object" judgement -- never reassigned, no bare
+        // mention of the object, no dynamic key, no property write anywhere -- is
+        // shared, not re-implemented. A property that is written somewhere, or an
+        // object that escapes, resolves to nothing here and the call stands.
+        const fnNode = resolveFunctionNode(path, callee);
+        if (!fnNode) return;
+
+        const shape = forwarderShapeOf(fnNode);
+        if (shape.reason === null) return;   // not forwarder-shaped at all
+        stats.wrappers_examined += 1;
+        if (shape.reason) {
+          bump(stats.wrapper_skips, shape.reason);
+          return;
+        }
+
+        const args = node.arguments;
+        if (args.length !== shape.arity) {
+          // A forwarder called with too few arguments passes undefined through;
+          // with too many it drops them. Either way the rewrite would not be the
+          // same call.
+          bump(stats.wrapper_skips, "call arity does not match the wrapper");
+          return;
+        }
+        for (const arg of args) {
+          if (arg.type === "SpreadElement" || arg.type === "ArgumentPlaceholder") {
+            bump(stats.wrapper_skips, "call passes a spread argument");
+            return;
+          }
+        }
+
+        const target = args[0];
+        // `W(obj.m, x)` evaluates obj.m to a value and calls it with no receiver;
+        // `obj.m(x)` calls it with obj as the receiver. Those differ whenever the
+        // method reads `this`, and the difference is silent -- so a member callee
+        // is only allowed when the receiver provably does not matter: a documented
+        // this-free static, reached through an unshadowed global namespace.
+        if (target.type === "MemberExpression" || target.type === "OptionalMemberExpression") {
+          const dotted = staticMemberPath(target);
+          if (!dotted || !THIS_FREE_STATICS.has(dotted)) {
+            bump(stats.wrapper_skips, "forwarded callee is a member expression (this binding would change)");
+            return;
+          }
+          // A local `JSON` would make the name mean something else entirely.
+          if (path.scope.getBinding(target.object.name)) {
+            bump(stats.wrapper_skips, "forwarded callee's namespace is shadowed by a local binding");
+            return;
+          }
+        }
+        // Inside the wrapper the call is an *indirect* eval, which runs in global
+        // scope; writing eval(...) here would make it direct and give it access to
+        // this scope's bindings.
+        if (target.type === "Identifier" && target.name === "eval") {
+          bump(stats.wrapper_skips, "forwarded callee is eval (direct and indirect eval differ)");
+          return;
+        }
+
+        path.replaceWith(t.callExpression(target, args.slice(1)));
+        stats.wrappers_inlined += 1;
+        changed += 1;
+      },
+    },
+  });
+  return changed;
+}
 // ---------------------------------------------------------------------------
 // (b) split-sequence switch dispatchers
 // ---------------------------------------------------------------------------
@@ -740,6 +955,9 @@ export function deflatten(code, opts) {
     switch_sequences_examined: 0,
     switch_skips: {},
     statements_linearised: 0,
+    wrappers_inlined: 0,
+    wrappers_examined: 0,
+    wrapper_skips: {},
     lines_before: code.split("\n").length,
     lines_after: code.split("\n").length,
   };
@@ -755,6 +973,7 @@ export function deflatten(code, opts) {
     const ast = parseSource(current);
     let touched = 0;
     touched += dropDeadBranches(ast, stats);
+    touched += inlineWrappers(ast, stats);
     touched += lineariseDispatchers(ast, stats);
     stats.passes = pass + 1;
     if (pass === 0) {
@@ -763,8 +982,10 @@ export function deflatten(code, opts) {
       firstPassSkips = {
         dead: Object.assign({}, stats.dead_branch_skips),
         sw: Object.assign({}, stats.switch_skips),
+        wrap: Object.assign({}, stats.wrapper_skips),
         deadExamined: stats.dead_branches_examined,
         swExamined: stats.switch_sequences_examined,
+        wrapExamined: stats.wrappers_examined,
       };
     }
     if (!touched) break;
@@ -775,8 +996,10 @@ export function deflatten(code, opts) {
   if (firstPassSkips) {
     stats.dead_branch_skips = firstPassSkips.dead;
     stats.switch_skips = firstPassSkips.sw;
+    stats.wrapper_skips = firstPassSkips.wrap;
     stats.dead_branches_examined = firstPassSkips.deadExamined;
     stats.switch_sequences_examined = firstPassSkips.swExamined;
+    stats.wrappers_examined = firstPassSkips.wrapExamined;
   }
   if (total > 0) stats.lines_after = current.split("\n").length;
 

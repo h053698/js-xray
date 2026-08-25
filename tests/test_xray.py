@@ -581,6 +581,270 @@ def test_deflatten_stage_in_pipeline():
         shutil.rmtree(outdir, ignore_errors=True)
 
 
+def _classification_rate(js_path):
+    """Run structure + explain on one file and return (functions, unclassified).
+
+    Deliberately measured rather than asserted from the transform's own counters:
+    the point of wrapper inlining is what the classifier can see afterwards, and a
+    wrappers_inlined count proves only that the rewrite happened, not that it
+    helped. Returns (0, 0) when the stages cannot run.
+    """
+    tmp = tempfile.mkdtemp(prefix="jsxray_rate_")
+    try:
+        st = os.path.join(tmp, "structure.json")
+        ex = os.path.join(tmp, "explain.json")
+        p1 = subprocess.run([sys.executable, os.path.join(SCRIPTS, "structure.py"), js_path, st],
+                            capture_output=True, text=True)
+        if p1.returncode != 0 or not os.path.isfile(st):
+            return 0, 0
+        p2 = subprocess.run([sys.executable, os.path.join(SCRIPTS, "explain.py"), st, ex],
+                            capture_output=True, text=True)
+        if p2.returncode != 0 or not os.path.isfile(ex):
+            return 0, 0
+        data = json.load(open(ex))
+        fns = data.get("functions") or []
+        unclassified = 0
+        for fn in fns:
+            roles = [r["role"] if isinstance(r, dict) else r for r in (fn.get("roles") or [])]
+            if not roles or roles == ["unclassified"]:
+                unclassified += 1
+        return len(fns), unclassified
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_wrapper_inlining_execution_equivalence():
+    """Pure call forwarders are resolved, and the rewrite is verified by running it.
+
+    `S.DmnGW(fetch, url, opts)` where DmnGW is `function (a, b, c) { return a(b, c); }`
+    means `fetch(url, opts)`. The wrapper is behaviour-preserving, so the only way
+    to tell a correct rewrite from a wrong one is to execute both: swapping two
+    arguments or dropping a `this` binding still parses and still passes every
+    later stage. The fixture routes every effect through TRACE, so this test
+    compares stdout byte for byte before and after (ACT-010).
+    """
+    print("wrapper inlining execution equivalence")
+    node, _ver = node_env.resolve()
+    if not node:
+        check("node available for wrapper test", False, "no node found")
+        return
+
+    fixture = os.path.join(ROOT, "fixtures", "wrapped_calls.js")
+    if not os.path.isfile(fixture):
+        check("wrapped_calls fixture present", False, fixture)
+        return
+
+    outdir = tempfile.mkdtemp(prefix="jsxray_wrap_")
+    try:
+        out = os.path.join(outdir, "out.js")
+        meta_path = os.path.join(outdir, "meta.json")
+        proc = subprocess.run(
+            [sys.executable, os.path.join(SCRIPTS, "deflatten.py"), fixture, out,
+             "--meta", meta_path],
+            capture_output=True, text=True)
+        check("wrapper deflatten exit 0", proc.returncode == 0, proc.stderr[-400:])
+        if not os.path.isfile(meta_path):
+            check("wrapper meta written", False)
+            return
+        meta = json.load(open(meta_path))
+        if not meta.get("ok"):
+            check("degrades without node", open(out).read() == open(fixture).read(),
+                  meta.get("error", "?"))
+            return
+        check("wrapper pass not rolled back", meta.get("rolled_back") is False, meta.get("error"))
+
+        before, before_err = _run_node(node, fixture)
+        after, after_err = _run_node(node, out)
+        check("wrapper fixture runs before", before is not None, before_err)
+        check("wrapper fixture runs after", after is not None, after_err)
+        check("wrapper stdout identical before/after", before is not None and before == after,
+              "before=%r after=%r" % (before, after))
+        check("wrapper fixture output non-trivial", bool(before and before.strip()), repr(before))
+
+        check("wrappers were inlined", meta.get("wrappers_inlined", 0) >= 5,
+              meta.get("wrappers_inlined"))
+        check("meta counts wrappers examined", meta.get("wrappers_examined", 0) >= 10,
+              meta.get("wrappers_examined"))
+
+        code = open(out).read()
+        # the calls the role classifier matches on must now be written literally
+        for call in ("fetch(url,", "JSON.stringify(payload)", "JSON.parse(rawA)",
+                     "Date.now()", 'atob("cGF5bG9hZA==")'):
+            check("call surfaced: %s" % call, call in code.replace(", ", ","), None)
+        # and the forwarding call sites are gone. Matched with the STORE. prefix
+        # because the fixture's own header comment documents the pattern using a
+        # differently-named object, and that comment is preserved by design.
+        check("DmnGW forwarder call site gone", "STORE.DmnGW(" not in code)
+        check("kQrTz forwarder call site gone", "STORE.kQrTz(" not in code)
+        check("nUlla forwarder call site gone", "STORE.nUlla(" not in code)
+        check("xxKwe forwarder call site gone", "STORE.xxKwe(" not in code)
+    finally:
+        shutil.rmtree(outdir, ignore_errors=True)
+
+
+def test_wrapper_inlining_refuses_lookalikes():
+    """Wrappers that only look like forwarders must survive byte-identical.
+
+    This is the half of the fixture that matters most. A wrong rewrite here is
+    strictly worse than no rewrite: the output still parses, nothing downstream
+    can detect it, and explain would then report a call that never happened --
+    a manufactured finding rather than a missing one (RSK-006). Each construct
+    carries one disqualifying property, and the refusal must be recorded with a
+    reason rather than being a silent non-match.
+    """
+    print("wrapper inlining conservatism")
+    node, _ver = node_env.resolve()
+    fixture = os.path.join(ROOT, "fixtures", "wrapped_calls.js")
+    if not os.path.isfile(fixture):
+        check("wrapped_calls fixture present for refusal test", False, fixture)
+        return
+
+    outdir = tempfile.mkdtemp(prefix="jsxray_wrap_neg_")
+    try:
+        out = os.path.join(outdir, "out.js")
+        meta_path = os.path.join(outdir, "meta.json")
+        subprocess.run(
+            [sys.executable, os.path.join(SCRIPTS, "deflatten.py"), fixture, out,
+             "--meta", meta_path],
+            capture_output=True, text=True)
+        if not os.path.isfile(meta_path):
+            check("wrapper refusal meta written", False)
+            return
+        meta = json.load(open(meta_path))
+        if not meta.get("ok"):
+            check("degrades without node", open(out).read() == open(fixture).read(),
+                  meta.get("error", "?"))
+            return
+
+        code = open(out).read()
+        # every unsound shape is still exactly as it was written
+        for marker in ("KEEP_SWAPPED_ARGS", "KEEP_THIS_BINDING", "KEEP_SIDE_EFFECT",
+                       "KEEP_REASSIGNED_PROP", "KEEP_ARITY_MISMATCH",
+                       "KEEP_MEMBER_CALLEE", "KEEP_EXTRA_ARG",
+                       "KEEP_ESCAPING_STORE", "KEEP_SHADOWED_NAMESPACE"):
+            check("kept %s" % marker, marker in code)
+
+        # the wrapper bodies themselves must not have been rewritten
+        check("swapped wrapper body intact", "return a(c, b)" in code)
+        check("this-bound wrapper body intact", "return a.call(b, c)" in code)
+        check("extra-argument wrapper body intact", 'return a(b, "injected")' in code)
+
+        # refusals are recorded with reasons, not silent
+        skips = meta.get("wrapper_skips") or {}
+        check("wrapper refusals recorded", bool(skips), skips)
+        reasons = " ".join(skips.keys())
+        check("argument reordering refused by name",
+              "reorders, drops or transforms" in reasons, reasons)
+        check("this binding refused by name", "this binding" in reasons, reasons)
+        check("arity mismatch refused by name", "arity" in reasons, reasons)
+        check("shadowed namespace refused by name", "shadowed" in reasons, reasons)
+
+        # the side-effecting wrapper is refused because its body is not a bare
+        # return, so it is not forwarder-shaped and is never counted -- what
+        # matters is that its call site is untouched
+        check("side-effect wrapper call site intact", "STORE.logged(atob" in code)
+        # and the reassigned / escaping storage objects are refused by the shared
+        # closed-object judgement, before the wrapper rules are even reached
+        check("reassigned wrapper call site intact", "STORE.pick(wrap" in code)
+        check("escaping-store call site intact", "STORE.via(wrap" in code)
+
+        if node:
+            before, before_err = _run_node(node, fixture)
+            after, after_err = _run_node(node, out)
+            check("wrapper fixture still runs", before is not None, before_err)
+            check("wrapper refusal stdout identical", before is not None and before == after,
+                  "before=%r after=%r" % (before, after))
+    finally:
+        shutil.rmtree(outdir, ignore_errors=True)
+
+
+def test_wrapper_inlining_improves_classification():
+    """The measured point of the pass: explain must see the real calls (ACT-010).
+
+    Wrapper inlining is not a readability change, it is what makes the role
+    classifier work at all -- it matches call text against markers like fetch and
+    JSON.stringify, so a call behind a forwarder is a function that reports
+    "(unclassified)". This test measures the unclassified rate before and after
+    the transform instead of asserting an improvement, so a regression to no
+    improvement shows up as a number rather than a passing test.
+    """
+    print("wrapper inlining classification gain")
+    node, _ver = node_env.resolve()
+    if not node:
+        check("node available for classification test", False, "no node found")
+        return
+    fixture = os.path.join(ROOT, "fixtures", "wrapped_calls.js")
+    if not os.path.isfile(fixture):
+        check("wrapped_calls fixture present for classification", False, fixture)
+        return
+
+    outdir = tempfile.mkdtemp(prefix="jsxray_wrap_cls_")
+    try:
+        out = os.path.join(outdir, "out.js")
+        meta_path = os.path.join(outdir, "meta.json")
+        subprocess.run(
+            [sys.executable, os.path.join(SCRIPTS, "deflatten.py"), fixture, out,
+             "--meta", meta_path],
+            capture_output=True, text=True)
+        if not os.path.isfile(meta_path) or not json.load(open(meta_path)).get("ok"):
+            check("classification measurable", False, "deflatten did not run")
+            return
+
+        total_before, unc_before = _classification_rate(fixture)
+        total_after, unc_after = _classification_rate(out)
+        if not total_before or not total_after:
+            check("explain ran on both files", False,
+                  "before=%s after=%s" % (total_before, total_after))
+            return
+
+        pct_before = 100.0 * unc_before / total_before
+        pct_after = 100.0 * unc_after / total_after
+        print("    unclassified: %d/%d (%.1f%%) -> %d/%d (%.1f%%)" % (
+            unc_before, total_before, pct_before, unc_after, total_after, pct_after))
+        check("unclassified rate did not get worse", pct_after <= pct_before,
+              "%.1f%% -> %.1f%%" % (pct_before, pct_after))
+        check("unclassified rate improved", unc_after < unc_before,
+              "%d -> %d of %d" % (unc_before, unc_after, total_before))
+
+        # and the improvement is the specific one claimed: a role that exists only
+        # because a marker call became visible
+        tmp = tempfile.mkdtemp(prefix="jsxray_wrap_roles_")
+        try:
+            st = os.path.join(tmp, "s.json")
+            ex = os.path.join(tmp, "e.json")
+            subprocess.run([sys.executable, os.path.join(SCRIPTS, "structure.py"), out, st],
+                           capture_output=True, text=True)
+            subprocess.run([sys.executable, os.path.join(SCRIPTS, "explain.py"), st, ex],
+                           capture_output=True, text=True)
+            if os.path.isfile(ex):
+                data = json.load(open(ex))
+                by_name = {}
+                for fn in data.get("functions") or []:
+                    roles = [r["role"] if isinstance(r, dict) else r
+                             for r in (fn.get("roles") or [])]
+                    by_name[fn.get("name") or fn.get("display") or ""] = roles
+                beacon = by_name.get("sendBeacon", [])
+                check("hidden fetch produces a network role",
+                      any("network" in r for r in beacon), beacon)
+                parse_all = by_name.get("parseAll", [])
+                check("hidden JSON.parse produces a serialization role",
+                      any("serial" in r for r in parse_all), parse_all)
+                # the calls themselves are in the structural facts explain reads
+                sdata = json.load(open(st))
+                calls = {}
+                for fn in sdata.get("functions") or []:
+                    calls[fn.get("name") or ""] = fn.get("calls") or []
+                check("fetch appears in sendBeacon's calls",
+                      "fetch" in calls.get("sendBeacon", []), calls.get("sendBeacon"))
+                check("JSON.stringify appears in sendBeacon's calls",
+                      "JSON.stringify" in calls.get("sendBeacon", []),
+                      calls.get("sendBeacon"))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+    finally:
+        shutil.rmtree(outdir, ignore_errors=True)
+
+
 def test_deflatten_regression_on_existing_fixtures():
     """Deflatten must not disturb the files the rest of the suite depends on.
 
@@ -1876,6 +2140,9 @@ def main():
     test_deflatten_leaves_undecidable_alone()
     test_deflatten_rollback()
     test_deflatten_stage_in_pipeline()
+    test_wrapper_inlining_execution_equivalence()
+    test_wrapper_inlining_refuses_lookalikes()
+    test_wrapper_inlining_improves_classification()
     test_deflatten_regression_on_existing_fixtures()
     test_pipeline_end_to_end()
     test_default_outdir_naming()

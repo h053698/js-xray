@@ -58,8 +58,10 @@ Eight stages, each writing its own artifact so a degraded stage stays visible:
    (`inline.js`, `inline.json`)
 3. **deflatten** - unflattens the control-flow residue WebCrack leaves when the
    deciding value reaches a branch or a switch dispatcher through a control-flow
-   storage object instead of as a literal; refuses anything it cannot prove and
-   records why (`clean.js`, `deflatten.json`)
+   storage object instead of as a literal, and resolves the pure call forwarders
+   held on that same object, so `S.DmnGW(fetch, url, opts)` becomes
+   `fetch(url, opts)` before anything downstream tries to classify it; refuses
+   anything it cannot prove and records why (`clean.js`, `deflatten.json`)
 4. **structure** - AST facts only, no interpretation (`structure.json`)
 5. **explain** - entry points, flows, roles with evidence, porting spec
    (`xray.json`)
@@ -71,6 +73,16 @@ Eight stages, each writing its own artifact so a degraded stage stays visible:
 `clean.js` is the output of the last source-rewriting stage, so it is the
 deflattened file; `inline.js` is kept as the intermediate, which makes the
 deflattening a diff you can read.
+
+Wrapper inlining sits in the deflatten stage rather than in a stage of its own
+because it needs the same scope-correct storage-object resolution and the same
+rollback gate, and because it is only worth anything ahead of `structure` and
+`explain`: those assign roles by matching call text, so a call behind a forwarder
+is invisible to them. Only provable pass-throughs are rewritten - body exactly
+`return p0(p1, ...)` over plain identifiers in declared order - and anything that
+reorders arguments, binds a receiver, or does more than forward is left in place
+and counted in `wrapper_skips`. Inventing a call that never ran would be a worse
+outcome than leaving a function unclassified.
 
 Every run also writes `pipeline.json`: each stage in order with the command that
 ran, whether it succeeded, and the stage's own metadata. A run that dies partway
@@ -130,6 +142,15 @@ describing code that never ran. Its counterpart,
 `test_deflatten_leaves_undecidable_alone`, requires
 `fixtures/flattened_ambiguous.js` to come back byte-identical, with each refusal
 recorded by reason.
+`fixtures/wrapped_calls.js` carries the same contract for wrapper inlining, and is
+checked three ways: stdout identical before and after, every look-alike wrapper
+(swapped arguments, `this` binding, side effect, reassigned property, arity
+mismatch, member callee, injected argument, escaping store, shadowed namespace)
+surviving byte-identical, and - the actual point of the pass - the unclassified
+rate measured before and after rather than assumed. On that fixture it moves from
+24/25 to 21/25 of the functions `explain` details; measured over all 40 functions
+it finds, 97.5% -> 90.0%. The ceiling is low there by construction, since most of
+the fixture is deliberately-unsound wrappers that must not be touched.
 `test_reachability_ignores_flow_budget` pins that a function reachable only
 through anonymous closures is not reported as dead code.
 `test_xq_is_a_view_not_an_analysis` runs `xq show --json` over every function in
@@ -161,7 +182,7 @@ skipping quietly.
 | `skill/scripts/inline_strings.py` | second-pass wrapper + `node --check` gate |
 | `skill/scripts/inline_strings.mjs` | Babel transform for per-scope string arrays |
 | `skill/scripts/deflatten.py` | deflatten wrapper + `node --check` gate |
-| `skill/scripts/deflatten.mjs` | Babel transform for control-flow residue: decidable branches, split-sequence switch dispatchers |
+| `skill/scripts/deflatten.mjs` | Babel transform for control-flow residue: decidable branches, split-sequence switch dispatchers, pure call-forwarder inlining |
 | `skill/scripts/structure.mjs` | AST fact extraction |
 | `skill/scripts/structure.py` | Node resolution + graceful degrade |
 | `skill/scripts/explain.py` | flows, roles, porting spec |

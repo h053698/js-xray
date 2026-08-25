@@ -18,6 +18,24 @@ lands in clean.js has every string decoded and half its lines unreachable. That
 is the file a reader then spends most of their tokens on. This stage resolves the
 deciding value through the storage object and finishes the job.
 
+The same storage object also holds pure call forwarders, and this stage resolves
+those too:
+
+    const S = {DmnGW: function (a, b, c) { return a(b, c); }};
+    S.DmnGW(fetch, url, opts);              // i.e. fetch(url, opts)
+
+That one is not a control-flow problem but a visibility problem, and it is why
+this transform has to run before structure and explain. explain.py assigns roles
+by matching call text against markers -- fetch, JSON.stringify, crypto.subtle,
+atob -- so a call sitting behind a forwarder is a function that reports as
+"(unclassified)". Resolving the forwarder is the only thing that puts the real
+call where the classifier can see it. Only provable pass-throughs are rewritten:
+the body must be exactly `return p0(p1, ...)` over plain identifiers in declared
+order. Wrappers that reorder arguments, bind a receiver, do anything besides
+forward, or live on a property that is written somewhere are left alone, because
+a rewrite that invents a call is worse than an unclassified function -- it turns
+a missing finding into a manufactured one.
+
 The transform itself runs on Babel's AST in deflatten.mjs, for the same reason
 the inlining pass does: deciding whether two operands are the same value, or
 whether a case body can be moved, needs real scope bindings. This module locates
@@ -58,6 +76,7 @@ def deflatten_file(inp, out, meta_path=None, node_check=True):
         "node": node_bin,
         "dead_branches_dropped": 0,
         "switch_sequences_linearised": 0,
+        "wrappers_inlined": 0,
         "rolled_back": False,
     }
 
@@ -144,11 +163,15 @@ def summarize(meta):
     span = ""
     if before and after and after != before:
         span = ", %d -> %d lines" % (before, after)
-    skipped = len(meta.get("switch_skips", {}) or {}) + len(meta.get("dead_branch_skips", {}) or {})
+    skipped = (len(meta.get("switch_skips", {}) or {})
+               + len(meta.get("dead_branch_skips", {}) or {})
+               + len(meta.get("wrapper_skips", {}) or {}))
     tail = ", %d construct(s) left alone" % skipped if skipped else ""
-    return "%d dead branches dropped, %d switch sequences linearised%s%s" % (
+    return ("%d dead branches dropped, %d switch sequences linearised, "
+            "%d call wrappers inlined%s%s") % (
         meta.get("dead_branches_dropped", 0),
         meta.get("switch_sequences_linearised", 0),
+        meta.get("wrappers_inlined", 0),
         span,
         tail,
     )

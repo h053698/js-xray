@@ -31,7 +31,7 @@ Prints the path to `xray.json` and writes `<name>.xrayjs/` next to the input:
 | `webcrack.json` | what WebCrack detected (string array, rotation, decoders) |
 | `inline.json` | second-pass results: scoped arrays, decoders, replacements |
 | `inline.js` | intermediate, after string inlining and before deflattening |
-| `deflatten.json` | deflattening results: branches dropped, switch sequences linearised, and the reason for every construct deliberately left alone |
+| `deflatten.json` | deflattening results: branches dropped, switch sequences linearised, call wrappers inlined, and the reason for every construct deliberately left alone |
 | `xray.toon` | `xray.json`'s content re-encoded as [TOON](https://github.com/toon-format/toon) - what `xq` reads by default, and what to read yourself instead of `xray.json` when re-loading the whole result into an LLM context |
 | `toon_stats.json` | the measured char/token reduction of `xray.toon` vs `xray.json` for this run - read this to see the actual savings, not an assumed one |
 | `pipeline.json` | run log: what each stage actually did, its command, ok/fail, and its own stdout metadata -- read this after a run to see which stage degraded or failed, instead of scrolling stderr |
@@ -50,7 +50,7 @@ string decoded and a large share of its lines unreachable, which is where a
 reader's tokens go. This stage resolves the deciding value through the storage
 object and finishes the job.
 
-It flattens two things:
+It resolves three things:
 
 - a branch whose test is statically decided, because both operands resolve to the
   same literal or the same binding - directly, or through a comparison helper
@@ -58,6 +58,28 @@ It flattens two things:
 - a `while (true) { switch (seq[i++]) { ... } break; }` dispatcher driven by a
   statically known `"3|1|2".split("|")` sequence, whose case bodies are the
   original statements in shuffled order.
+- a pure call forwarder held on the same storage object: `S.DmnGW(fetch, url, opts)`
+  where `DmnGW` is `function (a, b, c) { return a(b, c); }` becomes
+  `fetch(url, opts)`.
+
+That third one is a visibility fix rather than a control-flow fix, and it is why
+this stage has to run before `structure` and `explain`. The role classifier
+matches call text against markers - `fetch`, `JSON.stringify`, `crypto.subtle`,
+`atob` - so a call sitting behind a forwarder is a function that reports as
+"(unclassified)" no matter what it actually does. A wrapper is only inlined when
+its body is **exactly** `return p0(p1, p2, ...)` over plain identifier parameters
+forwarded in their declared order, and the call site supplies exactly as many
+arguments as the wrapper has parameters. Left alone, and counted in
+`wrapper_skips`: wrappers that reorder or drop arguments (`return a(c, b)`), that
+bind a receiver (`a.call(x, b)`, `a.apply(...)`), that add arguments of their own,
+that do anything besides forward, that are async or generators, that take rest,
+default or destructured parameters, and any wrapper on a property that is written
+somewhere or on a storage object that escapes. A member expression passed as the
+forwarded callee is refused too, since `W(obj.m, x)` calls `m` unbound while
+`obj.m(x)` does not - with a narrow exception for a short list of documented
+`this`-free statics (`JSON.parse`, `JSON.stringify`, `Math.*`, `Date.now`,
+`Object.keys`, `String.fromCharCode` and similar), and only when their namespace
+is not shadowed by a local binding.
 
 It deliberately leaves alone anything it cannot prove, because a wrong decision
 here is invisible: dropping the live branch instead of the dead one, or
@@ -67,10 +89,13 @@ that never ran. Refused constructs include a sequence computed at runtime, a
 dispatcher a case body `break`s out of, a cursor or sequence variable read from
 outside the dispatcher, a storage object whose properties are written or read
 under a dynamic key, a comparison helper that does anything besides compare, and
-a dead branch that hoists a `var` read after it. Every refusal is counted by
-reason in `deflatten.json` (`switch_skips`, `dead_branch_skips`), so a
-partially flattened file reads as partial rather than clean. A file with no such
-residue passes through byte-identical.
+a dead branch that hoists a `var` read after it. The same reasoning governs
+wrapper inlining, where the cost of being wrong is worse still: a rewritten call
+that never happened is a finding this pass manufactured, and a residual
+unclassified function is much cheaper than a fabricated `fetch`. Every refusal is
+counted by reason in `deflatten.json` (`switch_skips`, `dead_branch_skips`,
+`wrapper_skips`), so a partially flattened file reads as partial rather than
+clean. A file with no such residue passes through byte-identical.
 
 Once a run exists, `scripts/xq.py` queries these artifacts a question at a time
 instead of re-reading `xray.json` for each one - see
@@ -125,7 +150,7 @@ is not installed (`sh scripts/install-xq.sh`).
 | "What did the pipeline actually do on this run? Did anything fail or degrade?" | `pipeline.json` - each stage's `ok`, `meta`, and `cmd` in order, no source reading required |
 | "Why does `xray.json` look empty/degraded?" | `pipeline.json` for which stage failed, then that stage's raw stdout/stderr; `confidence_notes[]` in `xray.json` for caveats |
 | "Is the string-array deobfuscation trustworthy?" | `webcrack.json` (`"string array"`, `decoders`) and `inline.json` (`unresolved`, `rolled_back`) |
-| "Is any of `clean.js` still flattened, or did anything get removed?" | `deflatten.json` - what was dropped or linearised, and `switch_skips`/`dead_branch_skips` for what was left alone and why; diff `inline.js` against `clean.js` to see the exact change |
+| "Is any of `clean.js` still flattened, or did anything get removed?" | `deflatten.json` - what was dropped, linearised or inlined, and `switch_skips`/`dead_branch_skips`/`wrapper_skips` for what was left alone and why; diff `inline.js` against `clean.js` to see the exact change |
 | "Can I trust these findings as the module's real logic at all?" | `xray.json` -> `summary.vm_obfuscation`; anything but `none` means the analysis describes a bytecode interpreter, with the evidence in `vm_signals` |
 | "I need the facts but I'm token-constrained" | `xq` for a specific question - always try this first; `xray.toon` (+ `toon_stats.json`) only when you genuinely need all of it. Never slice `clean.js` by hand for this |
 | "What exactly ran, and can I reproduce this stage by hand?" | `pipeline.json` -> that stage's `cmd` list, runnable as-is |
