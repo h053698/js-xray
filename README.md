@@ -1,200 +1,260 @@
 # js-xray
 
-Toolkit behind the [js-xray](skill/SKILL.md) Codex skill: static reverse
-engineering of obfuscated JavaScript.
+난독화되거나 압축된 JavaScript를 에이전트가 빠르게 이해하고 다른 언어로 포팅할 수 있도록 정리하는 정적 분석 도구입니다.
 
-Deobfuscates a `.js` file with WebCrack, resolves any remaining per-scope string
-arrays on Babel's AST, then extracts structure and turns it into `xray.json` - a
-structured explanation an agent can read to describe the module's flows and
-functions, or to reimplement its logic in another language. `report.md` carries
-the same findings for a human.
+WebCrack과 Babel AST 패스를 조합해 문자열 배열, 제어 흐름 평탄화, 호출 래퍼를 정리한 뒤 함수 역할, 호출 흐름, 네트워크 계약, 알고리즘 단서와 포팅 사양을 추출합니다. 에이전트는 큰 파일을 반복해서 읽는 대신 `xq`로 필요한 함수나 흐름만 조회할 수 있습니다.
 
-## Setup
+## 무엇이 좋아지는가
 
-WebCrack's `isolated-vm` dependency ships native binaries per Node ABI, so Node
-must be in the range `>=22 <23` or `>=24 <25`. Node 25/26+ will not work.
+동일한 난독화 파일을 Claude Sonnet 5로 Python에 포팅한 실험에서 다음 결과를 얻었습니다.
+
+| 지표 | 원본 JS만 제공 | js-xray + xq | 개선 |
+| --- | ---: | ---: | ---: |
+| 정확도 | 13/13 | 13/13 | 동일 |
+| 소요 시간 | 16분 5초 | 6분 50초 | 2.4배 빠름 |
+| 총 토큰 | 8,920,677 | 2,273,771 | 74.5% 절감 |
+| API 비용 | $18.18 | $4.70 | $13.48 절감 |
+| 도구 호출 | 89회 | 44회 | 50.6% 감소 |
+| 포팅 구현 시작 | call #76 | call #9 | 훨씬 이른 구현 |
+
+비용은 벤치마크 당시 사용한 Claude Sonnet 5 요금인 입력 $2/MTok, 출력 $10/MTok을 적용했습니다. 자세한 실험 조건, 토큰 산정 방식과 C 조건(스킬까지 로드)은 [BENCHMARK.md](BENCHMARK.md)에 있습니다. 파이프라인과 결과 비교를 한 장에 정리한 편집 가능한 다이어그램은 [BENCHMARK.drawio](BENCHMARK.drawio)입니다.
+
+> 이 결과는 한 번의 통제된 실험입니다. 파일 난이도, 모델, 캐시 및 도구 호출 환경에 따라 절대 수치는 달라질 수 있습니다.
+
+## 요구 사항
+
+- Python 3
+- Bun 또는 npm
+- Node.js 24.x 권장
+
+WebCrack의 `isolated-vm` 네이티브 바이너리 때문에 Node `>=22 <23` 또는 `>=24 <25`가 필요합니다. Node 25/26 이상은 지원하지 않습니다. 실행 시 `node_env.py`가 fnm, Volta, nvm 설치 경로에서 호환 Node를 자동으로 찾습니다.
+
+## 설치
+
+### 1. 저장소와 의존성
 
 ```bash
+git clone https://github.com/h053698/js-xray.git
+cd js-xray
+
 fnm install 24
 bun install
 ```
 
-No shell activation is needed - `skill/scripts/node_env.py` locates a compatible
-Node under fnm, volta or nvm at runtime.
-
-To get the `xq` query command on your PATH:
+fnm 대신 Volta나 nvm을 사용해도 됩니다.
 
 ```bash
-sh scripts/install-xq.sh          # or: npm run install-xq
+volta install node@24
+# 또는
+nvm install 24
 ```
 
-It symlinks `skill/scripts/xq.py` into `~/.local/bin` (falling back to `~/bin`,
-then any writable non-system directory already on your PATH), warns if that
-directory is not on the PATH, and refuses to overwrite an `xq` it did not create.
-`--dry-run` prints the plan without touching anything, and re-running is a no-op.
-Because it is a symlink, a `git pull` updates the installed command too. Optional:
-everything below works as `python3 skill/scripts/xq.py ...` without it.
+npm을 사용하려면 `npm install`을 실행해도 됩니다. TOON 참조 구현을 사용하는 전체 테스트까지 실행하려면 devDependency도 설치되어 있어야 합니다.
 
-Token counts in the TOON-savings report use tiktoken (o200k_base) when it is
-installed. It is optional: `pip install tiktoken` if you want token counts
-instead of the character-count fallback; the pipeline runs fine without it.
-
-## Usage
+### 2. xq 명령 설치
 
 ```bash
-python3 skill/scripts/xray.py path/to/input.js
+sh scripts/install-xq.sh --dry-run
+sh scripts/install-xq.sh
 ```
 
-Prints the path to `xray.json`. Results land in `<name>.xrayjs/`: `xray.json`,
-`xray.toon`, `toon_stats.json`, `report.md`, `clean.js`, `structure.json`,
-`analysis.json`, `pipeline.json`, `webcrack.js`, `webcrack.json`, `inline.js`,
-`inline.json`, `deflatten.json`, `webcrack.log`.
+설치 스크립트는 저장소의 `skill/scripts/xq.py`를 사용자 전용 PATH 디렉터리에 심링크합니다. 일반적으로 `~/.local/bin/xq`를 사용하며 다음 성질을 가집니다.
 
-Eight stages, each writing its own artifact so a degraded stage stays visible:
+- sudo와 시스템 디렉터리를 사용하지 않음
+- 여러 번 실행해도 안전함
+- 다른 프로그램의 `xq`를 덮어쓰지 않음
+- 저장소에서 `git pull`하면 설치된 명령도 바로 갱신됨
 
-1. **deobfuscate** - WebCrack (`webcrack.js`)
-2. **inline** - second AST pass for string arrays declared per IIFE scope, which
-   WebCrack does not handle; verifies its output parses and rolls back if not
-   (`inline.js`, `inline.json`)
-3. **deflatten** - unflattens the control-flow residue WebCrack leaves when the
-   deciding value reaches a branch or a switch dispatcher through a control-flow
-   storage object instead of as a literal, and resolves the pure call forwarders
-   held on that same object, so `S.DmnGW(fetch, url, opts)` becomes
-   `fetch(url, opts)` before anything downstream tries to classify it; refuses
-   anything it cannot prove and records why (`clean.js`, `deflatten.json`)
-4. **structure** - AST facts only, no interpretation (`structure.json`)
-5. **explain** - entry points, flows, roles with evidence, porting spec
-   (`xray.json`)
-6. **anchors** - keyword grep, optional (`analysis.json`)
-7. **report** - the same findings as prose (`report.md`)
-8. **encode TOON** - `xray.json` re-encoded as TOON for lower token cost, plus a
-   char/token reduction report; always runs (`xray.toon`, `toon_stats.json`)
-
-`clean.js` is the output of the last source-rewriting stage, so it is the
-deflattened file; `inline.js` is kept as the intermediate, which makes the
-deflattening a diff you can read.
-
-Wrapper inlining sits in the deflatten stage rather than in a stage of its own
-because it needs the same scope-correct storage-object resolution and the same
-rollback gate, and because it is only worth anything ahead of `structure` and
-`explain`: those assign roles by matching call text, so a call behind a forwarder
-is invisible to them. Only provable pass-throughs are rewritten - body exactly
-`return p0(p1, ...)` over plain identifiers in declared order - and anything that
-reorders arguments, binds a receiver, or does more than forward is left in place
-and counted in `wrapper_skips`. Inventing a call that never ran would be a worse
-outcome than leaving a function unclassified.
-
-Every run also writes `pipeline.json`: each stage in order with the command that
-ran, whether it succeeded, and the stage's own metadata. A run that dies partway
-still writes it, with the failing stage recorded as `ok: false` - so a failure is
-a fact in a file rather than something to reconstruct from scrolled-past stderr.
-
-## Querying a finished run
+PATH에 등록하지 않으려면 아래처럼 직접 실행할 수 있습니다.
 
 ```bash
-cd path/to && xq show on          # or: xq name.js show on
+python3 skill/scripts/xq.py summary
 ```
 
-`xray.json` costs the same ~15k tokens to read whether the answer is one line or
-the whole file, and reverse engineering is iterative - find a symbol, trace its
-callers, read its source, move on. `xq` answers one question at a time from the
-artifacts already on disk, at a few hundred tokens each: `summary`, `find`,
-`show`, `callers`/`callees`, `flow`, `port`, `grep`, `entries`, `roles`. On the
-sample, `show` of one function is 54x smaller than `xray.json`, and `grep` over
-600x.
+### 3. Codex 스킬 등록
 
-`show` is the one worth knowing: it prints the function's `xray.json` entry *and*
-its source from `clean.js`, so "what is this function" is a single command. Text
-by default, `--json` for scripting.
+Codex가 `$js-xray` 스킬로 자동 인식하게 하려면 저장소의 `skill/` 디렉터리를 Codex 스킬 경로에 연결합니다.
 
-The directory argument is optional, because typing it is the overhead the tool
-exists to remove: an explicit path still works, a `.js` path resolves to the run
-beside it, and omitting it uses the single run directory in the current one. A run
-directory is one holding an `xray.json` or `xray.toon`, whatever `-o` named it, so
-a run written to `popup.xrayout` is found the same as `popup.xrayjs`. When there is
-more than one, `xq` lists them and exits 3 instead of choosing - a correct answer
-about the wrong file is the one mistake a caller has no way to notice. Which run
-answered goes to stderr, so stdout stays parseable.
+```bash
+mkdir -p ~/.codex/skills
+ln -s "$(pwd)/skill" ~/.codex/skills/js-xray
+```
 
-It adds no stage and re-derives nothing - every value comes from an artifact, so
-`xq` and `xray.json` cannot give different answers. A test asserts exactly that:
-`show --json` returns each of the canonical `functions[]` objects unchanged.
+이미 같은 이름이 있다면 먼저 링크 대상을 확인하고 직접 교체 여부를 결정하세요. 복사도 가능하지만 심링크를 쓰면 저장소 업데이트가 즉시 반영됩니다.
 
-## Tests
+등록 후 Codex 앱을 새로 열거나 스킬 목록을 새로고침한 다음 다음처럼 사용할 수 있습니다.
+
+```text
+$js-xray path/to/target.js
+```
+
+스킬을 쓰지 않아도 CLI 전체 기능은 사용할 수 있습니다.
+
+### 4. 토큰 통계 정확도 높이기(선택)
+
+```bash
+pip install tiktoken
+```
+
+`tiktoken`이 없으면 TOON 절감률을 문자 수 기반으로 계산합니다. 분석 자체에는 영향을 주지 않습니다.
+
+## 빠른 시작
+
+```bash
+python3 skill/scripts/xray.py path/to/target.js
+```
+
+기본적으로 입력 파일 옆에 `target.xrayjs/`가 생성됩니다.
+
+```bash
+xq path/to/target.xrayjs summary
+xq path/to/target.xrayjs entries
+xq path/to/target.xrayjs find sign
+xq path/to/target.xrayjs show signData
+xq path/to/target.xrayjs port --all
+```
+
+현재 디렉터리에 분석 폴더가 하나뿐이면 경로를 생략할 수 있습니다.
+
+```bash
+cd path/to
+xq summary
+xq show signData
+```
+
+## 분석 순서
+
+```text
+input.js
+  │
+  ├─ 1. WebCrack deobfuscate
+  │      RC4/base64 문자열 배열과 알려진 난독화 패턴 정리
+  │
+  ├─ 2. residual string inline
+  │      스코프별 문자열 배열과 디코더를 Babel AST로 인라인
+  │
+  ├─ 3. deflatten + wrapper inline
+  │      dead branch 제거, switch dispatcher 선형화,
+  │      OBJ.forward(fetch, url) → fetch(url) 변환
+  │
+  ├─ 4. structure
+  │      함수, 클래스, 호출 간선, URL 등 사실 추출
+  │
+  ├─ 5. explain
+  │      진입점, 역할, 실행 흐름, 알고리즘 단서, 포팅 사양 생성
+  │
+  ├─ 6. anchor scan
+  │      crypto, network, fingerprinting, storage 등 키워드 근거 수집
+  │
+  ├─ 7. report
+  │      사람이 읽을 수 있는 Markdown 보고서 생성
+  │
+  └─ 8. TOON
+         같은 분석 데이터를 토큰 효율적인 형식으로 인코딩
+```
+
+각 소스 변환 단계는 결과가 다시 파싱되고 `node --check`를 통과하는지 확인합니다. deflatten은 의미 보존을 정적으로 증명하지 못하는 구조를 그대로 남기며, 실패하면 입력으로 롤백합니다.
+
+## 산출물
+
+```text
+target.xrayjs/
+├── pipeline.json       단계별 명령, 성공 여부, 시간과 메타데이터
+├── webcrack.js         WebCrack 출력
+├── webcrack.json       WebCrack 변환 통계
+├── webcrack.log        WebCrack 로그
+├── inline.js           잔여 문자열 인라인 후 소스
+├── inline.json         문자열 인라인 통계
+├── clean.js            최종 정리된 소스
+├── deflatten.json      dead branch/switch/wrapper 변환 통계
+├── structure.json      전체 AST 사실과 호출 그래프
+├── xray.json           정규 분석 데이터
+├── xray.toon           토큰 절약형 분석 데이터
+├── toon_stats.json     JSON 대비 TOON 크기 및 토큰 통계
+├── analysis.json       키워드 앵커 결과
+└── report.md           사람이 읽는 보고서
+```
+
+`xray.json`은 정규 스키마와 호환성을 위한 기준 데이터이고, `xray.toon`은 에이전트가 적은 토큰으로 다시 읽기 위한 파생 표현입니다. `xq`는 둘 중 존재하는 산출물을 읽어 동일한 질의 결과를 반환합니다.
+
+## xq 명령
+
+전체 분석 파일을 컨텍스트에 넣기 전에 `xq`로 범위를 좁히는 것이 권장 사용법입니다.
+
+| 명령 | 용도 |
+| --- | --- |
+| `xq summary` | 파일 규모, 진입점, 흐름, 알고리즘 개요 |
+| `xq entries` | 외부에서 시작되는 진입점 목록 |
+| `xq find <pattern>` | 함수 이름과 분석 데이터에서 심볼 검색 |
+| `xq show <name-or-id>` | 함수 분석과 `clean.js` 소스 조각 표시 |
+| `xq callers <name>` | 호출자 추적 |
+| `xq callees <name>` | 피호출자 추적 |
+| `xq flow [symbol]` | 전체 흐름 또는 심볼 관련 흐름 |
+| `xq roles [role]` | 역할별 함수 조회 |
+| `xq port [algorithm|--all]` | 다른 언어 구현에 필요한 포팅 사양 |
+| `xq grep <pattern>` | `clean.js` 검색과 함수 귀속 |
+
+권장 조사 순서는 다음과 같습니다.
+
+1. `xq summary`로 전체 성격을 확인합니다.
+2. `xq entries`, `xq flow`로 외부 입력부터 실행 경로를 좁힙니다.
+3. `xq find`, `xq roles`로 관심 함수를 찾습니다.
+4. `xq show`, `xq callers`, `xq callees`로 해당 부분만 읽습니다.
+5. 다른 언어로 옮길 때만 `xq port --all`과 필요한 `clean.js` 조각을 확인합니다.
+6. 원본 전체 읽기는 정적 결과가 부족하거나 동적 동작을 검증해야 할 때만 수행합니다.
+
+## 주요 옵션
+
+```bash
+python3 skill/scripts/xray.py input.js \
+  --top 50 \
+  -o output.xrayjs
+```
+
+| 옵션 | 설명 |
+| --- | --- |
+| `-o, --outdir PATH` | 출력 디렉터리 지정 |
+| `--top N` | `xray.json`에서 상세 설명할 함수 수 |
+| `--anchors FILE` | 사용자 정의 앵커 파일 |
+| `--skip-deobfuscate` | WebCrack 단계 생략 |
+| `--skip-inline` | 잔여 문자열 인라인 생략 |
+| `--skip-deflatten` | 제어 흐름 평탄화 해소 생략 |
+| `--skip-anchors` | 키워드 앵커 스캔 생략 |
+| `--mangle` | WebCrack mangle 활성화 |
+
+## 안전성과 한계
+
+- 정적 분석 결과입니다. 런타임 생성 코드, 네트워크 응답, 브라우저 상태에 의존한 동작은 별도 검증이 필요합니다.
+- JSVMP 형태는 탐지하고 경고하지만 사용자 정의 바이트코드를 완전 복구하지 않습니다.
+- 단일 상수만 일치하면 표준 해시로 단정하지 않고 단서로만 기록합니다.
+- `charCodeAt` 기반 알고리즘을 포팅할 때는 JavaScript UTF-16 코드 유닛 의미를 보존합니다.
+- deflatten과 wrapper 인라인은 안전성을 증명할 수 없는 형태를 거부합니다.
+- 분석 대상 코드를 실행하지 않는 정적 파이프라인이지만 WebCrack 및 Node 의존성은 신뢰 가능한 버전으로 관리해야 합니다.
+
+## 테스트
 
 ```bash
 python3 tests/test_xray.py
-```
-
-364 checks, no pytest required. Brace matching against strings, comments and
-template interpolations; function-vs-keyword detection; cross-scope string-array
-resolution; the syntax-validity gate; an end-to-end run over
-`fixtures/sample_obfuscated.js` (javascript-obfuscator output: base64-encoded,
-rotated string array).
-
-Four of them close the loop rather than checking a field. `test_multiply_style`
-runs the Python snippet the porting guide emits against the original JS and
-compares digests, for both `Math.imul` and `h * k >>> 0` sources - the two are not
-interchangeable, and the guide used to hand out one snippet for both.
-`test_deflatten_execution_equivalence` runs `fixtures/flattened.js` under node
-before and after the deflattening pass and requires identical stdout. That
-comparison is the whole safety story for that stage: a deflattening bug produces
-valid JavaScript, so `node --check` and every later stage would accept a file
-describing code that never ran. Its counterpart,
-`test_deflatten_leaves_undecidable_alone`, requires
-`fixtures/flattened_ambiguous.js` to come back byte-identical, with each refusal
-recorded by reason.
-`fixtures/wrapped_calls.js` carries the same contract for wrapper inlining, and is
-checked three ways: stdout identical before and after, every look-alike wrapper
-(swapped arguments, `this` binding, side effect, reassigned property, arity
-mismatch, member callee, injected argument, escaping store, shadowed namespace)
-surviving byte-identical, and - the actual point of the pass - the unclassified
-rate measured before and after rather than assumed. On that fixture it moves from
-24/25 to 21/25 of the functions `explain` details; measured over all 40 functions
-it finds, 97.5% -> 90.0%. The ceiling is low there by construction, since most of
-the fixture is deliberately-unsound wrappers that must not be touched.
-`test_reachability_ignores_flow_budget` pins that a function reachable only
-through anonymous closures is not reported as dead code.
-`test_xq_is_a_view_not_an_analysis` runs `xq show --json` over every function in
-the sample and requires the object back unchanged, so the query CLI cannot drift
-into answering from its own derivation of the facts.
-
-The TOON encoder has its own suite:
-
-```bash
 python3 skill/tests/test_toon_encoder.py
 ```
 
-57 checks covering all four TOON forms and the quoting rules. Thirteen of them
-round-trip the encoder's output through the real `@toon-format/toon` reference
-decoder and compare the decoded value to the original - including the full
-`xray.json` of a real sample, so conformance is verified against the spec's own
-implementation rather than against our reading of the spec. The reference decoder
-is a devDependency; without `npm install` those checks fail loudly instead of
-skipping quietly.
+테스트는 문자열 인라인, 실행 동등성 기반 deflatten 검증, 거부해야 하는 모호한 구조, 호출 래퍼, xq/TOON 동등성, 설치 스크립트와 전체 파이프라인을 포함합니다.
 
-## Layout
+## 개발 구조
 
-| path | purpose |
+| 경로 | 역할 |
 | --- | --- |
-| `skill/SKILL.md` | skill instructions, `xray.json` schema |
-| `skill/scripts/xray.py` | orchestrator |
-| `skill/scripts/xq.py` | query CLI over a finished `.xrayjs` run |
-| `skill/scripts/run_webcrack.py` | WebCrack wrapper, degrades gracefully |
-| `skill/scripts/inline_strings.py` | second-pass wrapper + `node --check` gate |
-| `skill/scripts/inline_strings.mjs` | Babel transform for per-scope string arrays |
-| `skill/scripts/deflatten.py` | deflatten wrapper + `node --check` gate |
-| `skill/scripts/deflatten.mjs` | Babel transform for control-flow residue: decidable branches, split-sequence switch dispatchers, pure call-forwarder inlining |
-| `skill/scripts/structure.mjs` | AST fact extraction |
-| `skill/scripts/structure.py` | Node resolution + graceful degrade |
-| `skill/scripts/explain.py` | flows, roles, porting spec |
-| `skill/scripts/analyze.py` | anchors, brace matching, block ranking |
-| `skill/scripts/report.py` | Markdown report from `xray.json` |
-| `skill/scripts/toon_encoder.py` | pure-stdlib JSON-to-TOON encoder |
-| `skill/scripts/toon_stats.py` | TOON encode stage + char/token savings report |
-| `skill/scripts/node_env.py` | compatible-Node resolution |
-| `scripts/install-xq.sh` | puts `xq` on the PATH; idempotent, `--dry-run` |
-| `skill/references/` | interpretation guide |
-| `skill/tests/` | TOON encoder suite + the Node reference-decoder shim |
-| `fixtures/` | obfuscated test inputs, incl. a cross-scope alias case and a pair of control-flow-flattening cases (one flattenable, one deliberately undecidable) |
-| `tests/samples/` | real-world sample used for manual verification |
+| `skill/SKILL.md` | Codex 스킬 지침과 에이전트 조사 절차 |
+| `skill/scripts/xray.py` | 파이프라인 오케스트레이터 |
+| `skill/scripts/xq.py` | 분석 산출물 질의 CLI |
+| `skill/scripts/run_webcrack.py` | WebCrack 래퍼 |
+| `skill/scripts/inline_strings.py/.mjs` | 스코프 안전 문자열 인라인 |
+| `skill/scripts/deflatten.py/.mjs` | 제어 흐름과 호출 래퍼 정리 |
+| `skill/scripts/structure.py/.mjs` | AST 사실 추출 |
+| `skill/scripts/explain.py` | 역할, 흐름, 포팅 사양 생성 |
+| `skill/scripts/toon_encoder.py` | JSON 모델을 TOON으로 인코딩/디코딩 |
+| `scripts/install-xq.sh` | 사용자 PATH에 xq 설치 |
+| `fixtures/` | 회귀 테스트용 난독화 패턴 |
+| `tests/` | 메인 통합 테스트 |
+| `BENCHMARK.md` | 벤치마크 상세 자료 |
+| `BENCHMARK.drawio` | 편집 가능한 파이프라인 다이어그램 |
