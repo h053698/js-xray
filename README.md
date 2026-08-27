@@ -51,6 +51,14 @@ bun create h053698/js-xray "$HOME/.local/share/js-xray" --no-install --no-git &&
 
 That single copy-paste command downloads js-xray, installs its pinned dependencies, prepares a compatible Node 24 runtime when needed, installs the `js-xray` and `xq` commands, and registers the Codex skill. `--no-install` deliberately lets js-xray prepare Node 24 before installing WebCrack's native dependency.
 
+### Short prompt for a coding agent
+
+Copy this prompt into Codex, Claude Code, or another local coding agent:
+
+```text
+Install js-xray from https://github.com/h053698/js-xray using the documented one-command Bun installer. Do not overwrite unrelated existing commands or skills. Verify that js-xray --help and xq --help work and that the Codex js-xray skill is registered. If ~/.local/bin is not on PATH, show me the exact command to add it, but do not edit my shell profile automatically.
+```
+
 After it finishes, restart Codex and run:
 
 ```bash

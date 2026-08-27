@@ -51,6 +51,14 @@ bun create h053698/js-xray "$HOME/.local/share/js-xray" --no-install --no-git &&
 
 이 한 줄을 그대로 붙여넣으면 저장소 다운로드, 고정된 의존성 설치, 호환 Node 24 준비, `js-xray`·`xq` 명령 등록, Codex 스킬 등록까지 처리합니다. `--no-install`은 WebCrack의 네이티브 의존성을 설치하기 전에 js-xray가 먼저 Node 24를 준비하도록 하기 위한 안전장치입니다.
 
+### 코딩 에이전트에게 줄 짧은 설치 프롬프트
+
+아래 문장을 Codex, Claude Code 같은 로컬 코딩 에이전트에 그대로 전달하세요.
+
+```text
+https://github.com/h053698/js-xray 저장소의 README에 있는 Bun 원클릭 설치 방법으로 js-xray를 설치해줘. 기존의 관련 없는 명령이나 스킬은 덮어쓰지 말고, 설치 후 js-xray --help와 xq --help가 동작하는지, Codex js-xray 스킬이 등록됐는지 확인해줘. ~/.local/bin이 PATH에 없다면 셸 설정을 자동 수정하지 말고 내가 추가할 정확한 명령만 알려줘.
+```
+
 설치가 끝나면 Codex를 다시 시작하고 다음처럼 실행합니다.
 
 ```bash
