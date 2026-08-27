@@ -94,9 +94,34 @@ correct-looking output that diverges after a few characters.
 **Signed vs unsigned.** JS `|0` produces a *signed* 32-bit int, `>>>0` an
 unsigned one. Use `to_int32` above where the source relies on the signed form.
 
-**charCodeAt is UTF-16.** `ord(ch)` matches for the BMP, but characters above
-U+FFFF are two JS code units. If the input can contain emoji, iterate over
-`s.encode("utf-16-le")` pairs instead.
+**charCodeAt is UTF-16, and this is the trap that survives a test suite.**
+`charCodeAt(i)` returns a UTF-16 code unit; Python's `ord(ch)` returns a code
+point. They are the same number for every character in the BMP, so an
+`ord()`-based port passes every ASCII, Hangul and CJK case and returns a
+different digest for the first character above U+FFFF - one emoji, one rare CJK
+ideograph, one astral symbol. Check `char_source` on the algorithm entry: it says
+`utf16-code-units` when the source reads `charCodeAt`, `bytes` when it encodes
+first, and `null` when the facts did not decide it.
+
+```python
+def code_units(s):
+    # what charCodeAt(i) returns: an astral code point arrives as two surrogates
+    for ch in s:
+        cp = ord(ch)
+        if cp > 0xFFFF:
+            cp -= 0x10000
+            yield 0xD800 + (cp >> 10)
+            yield 0xDC00 + (cp & 0x3FF)
+        else:
+            yield cp
+
+for c in code_units(data):   # not: for ch in data: ord(ch)
+    ...
+```
+
+Reading pairs out of `s.encode("utf-16-le")` works too. Either way, put an
+astral character in the inputs you compare against Node - no ASCII input can
+distinguish a correct port from this bug.
 
 **JSON.stringify formatting.** JS emits no spaces and preserves insertion order.
 Python's default adds spaces after separators, which changes any hash computed

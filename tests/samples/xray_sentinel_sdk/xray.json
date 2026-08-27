@@ -2213,7 +2213,9 @@
         ],
         "loops": 1,
         "multiply_style": "imul",
-        "multiply_note": "Math.imul(a, b) -- an exact 32-bit product. Port as (a * b) & 0xFFFFFFFF in Python, or uint32 multiply in Go/Rust."
+        "multiply_note": "Math.imul(a, b) -- an exact 32-bit product. Port as (a * b) & 0xFFFFFFFF in Python, or uint32 multiply in Go/Rust.",
+        "char_source": "utf16-code-units",
+        "char_source_note": "charCodeAt(i) -- UTF-16 code units, so a character above U+FFFF is two iterations of its two surrogate halves. Python's ord(ch) gives one code point instead and diverges there; iterate over UTF-16 code units."
       }
     ],
     "network_contracts": [
@@ -2390,6 +2392,10 @@
       {
         "issue": "32-bit multiply style: imul",
         "detail": "Math.imul(a, b) -- an exact 32-bit product. Port as (a * b) & 0xFFFFFFFF in Python, or uint32 multiply in Go/Rust."
+      },
+      {
+        "issue": "charCodeAt is UTF-16 code units, not code points",
+        "detail": "charCodeAt(i) returns a UTF-16 code unit, so a character above U+FFFF (emoji, rare CJK, most symbols) is two iterations of its two surrogate halves. Python's ord(ch) returns one code point, which is the same number for every character in the BMP and a different one above it: an ord()-based port passes every ASCII, Hangul and CJK test and then returns a different digest for the first emoji it sees. Iterate over UTF-16 code units instead -- split astral code points into surrogates, or read pairs out of s.encode('utf-16-le') -- and put an astral case in the tests, since no ASCII input can catch this."
       },
       {
         "issue": "request shape is part of the contract",

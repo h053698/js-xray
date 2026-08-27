@@ -1144,6 +1144,189 @@ def test_multiply_style():
     shutil.rmtree(outdir, ignore_errors=True)
 
 
+# Inputs chosen so that every boundary the UTF-16 / code-point split can hide
+# behind is crossed. ASCII and BMP text agree under either reading, which is
+# exactly why an ord()-based snippet used to pass: the divergence starts at
+# U+10000 and nothing below it can see it.
+ASTRAL_CASES = [
+    "",                       # empty
+    "hello",                  # ASCII
+    "\ud7ff",                 # last code point before the surrogate block
+    "\ue000",                 # first after it
+    "\uffff",                 # last of the BMP: still one unit, still one point
+    "\U00010000",             # first astral code point: one point, two units
+    "\U0010ffff",             # last assignable code point
+    "\U0001f600",             # a single emoji
+    "\U0001f600\U0001f680\U0001f4a9",   # several in a row
+    "\ud55c\uae00",           # BMP non-ASCII (Hangul) -- must not regress
+    "\u4e2d\u6587",           # BMP non-ASCII (CJK)
+    "a\U0001f600b\ud55c\U0010ffff\uffff\u4e2dz",  # astral interleaved with BMP
+    ("seed-\U0001f984-" + "x" * 40 + "\U0001f600") * 8,  # long mixed string
+]
+
+
+# A JSON \ud83d\ude00 pair is one astral character to JS and to json.loads, but
+# two lone surrogates when pasted straight into a Python source literal -- which
+# would hand the harness different input than the JS reference got and let an
+# ord() loop look correct. So the harnesses below decode their cases with
+# json.loads rather than embedding them as literals.
+def astral_cases_literal():
+    return "json.loads(" + json.dumps(json.dumps(ASTRAL_CASES)) + ")"
+
+
+def test_astral_char_encoding():
+    """The snippet must consume what charCodeAt consumes, not what ord() gives.
+
+    Same shape as test_multiply_style, and the same failure it guards against one
+    level down. That test verified how a step is computed and left what is fed
+    into it unchecked, which is how a snippet built on "for ch in data: ord(ch)"
+    shipped: ord() is a code point, charCodeAt(i) is a UTF-16 code unit, and the
+    two are the same number for every character in the BMP. So every ASCII test
+    passed, every Hangul and CJK test passed, and the digest changed on the first
+    emoji -- the silent-divergence mode this project treats as the worst outcome.
+
+    Both multiply styles are covered, because the encoding is orthogonal to the
+    multiply and a fix applied to one snippet only would leave the other wrong.
+    """
+    print("astral character encoding")
+    node, _ver = node_env.resolve()
+    if not node:
+        check("node available for astral encoding test", False, "no node found")
+        return
+
+    outdir = tempfile.mkdtemp(prefix="jx_astral_")
+    try:
+        struct_path = os.path.join(outdir, "structure.json")
+
+        # charCodeAt in both, so the detected char_source is the same and the only
+        # difference is the multiply -- as in test_multiply_style.
+        trunc_src = ("function hashTrunc(s) {\n"
+                     "  var h = 2166136261;\n"
+                     "  for (var i = 0; i < s.length; i++) {\n"
+                     "    h ^= s.charCodeAt(i);\n"
+                     "    h = h * 16777619 >>> 0;\n"
+                     "  }\n"
+                     "  return h.toString(16);\n"
+                     "}\n")
+        imul_src = ("function hashImul(s) {\n"
+                    "  var h = 2166136261;\n"
+                    "  for (var i = 0; i < s.length; i++) {\n"
+                    "    h ^= s.charCodeAt(i);\n"
+                    "    h = Math.imul(h, 16777619) >>> 0;\n"
+                    "  }\n"
+                    "  return h.toString(16);\n"
+                    "}\n")
+
+        # the unit has to be read off the source, the same way the multiply is
+        sources = {}
+        for tag, src in (("trunc", trunc_src), ("imul", imul_src)):
+            js = os.path.join(outdir, tag + ".js")
+            open(js, "w").write(src)
+            subprocess.run([node, os.path.join(SCRIPTS, "structure.mjs"), js, struct_path],
+                           capture_output=True)
+            st = json.load(open(struct_path))
+            data = explain.explain(st)
+            algos = data["porting"]["algorithms"]
+            sources[tag] = algos[0].get("char_source") if algos else None
+            if tag == "imul":
+                issues = [p["issue"] for p in data["porting"]["pitfalls"]]
+                check("a charCodeAt file gets an encoding pitfall",
+                      any("UTF-16" in i for i in issues), issues)
+
+        for tag in ("trunc", "imul"):
+            check("charCodeAt detected as utf16 code units (%s)" % tag,
+                  sources[tag] == "utf16-code-units", "got %s" % sources[tag])
+
+        # round trip: run the JS, run the snippet we hand out, compare digests
+        runner = os.path.join(outdir, "run.mjs")
+        open(runner, "w").write(
+            trunc_src + imul_src +
+            "const cases = " + json.dumps(ASTRAL_CASES) + ";\n"
+            "console.log(JSON.stringify({trunc: cases.map(hashTrunc), "
+            "imul: cases.map(hashImul)}));\n")
+        proc = subprocess.run([node, runner], capture_output=True, text=True)
+        ref = json.loads(proc.stdout.strip())
+
+        for tag, style in (("trunc", "truncated-float"), ("imul", "imul")):
+            snippet = report.port_snippet("FNV-1a 32-bit", style, sources[tag])
+            check("snippet emitted for %s + charCodeAt" % style, bool(snippet))
+            if not snippet:
+                continue
+            harness = os.path.join(outdir, "port_" + tag + ".py")
+            body = "\n".join("    " + ln for ln in snippet.splitlines())
+            open(harness, "w", encoding="utf-8").write(
+                "import json, sys\n"
+                "def digest(data):\n" + body + "\n"
+                "    return format(h & 0xFFFFFFFF, 'x')\n"
+                "print(json.dumps([digest(c) for c in "
+                + astral_cases_literal() + "]))\n")
+            out = subprocess.run([sys.executable, harness], capture_output=True, text=True)
+            got = json.loads(out.stdout.strip()) if out.stdout.strip() else None
+            check("astral port matches JS (%s)" % tag, got == ref[tag],
+                  "first mismatch: %s" % next(
+                      ("%r py=%s js=%s" % (ASTRAL_CASES[i], (got or [])[i:i + 1],
+                                           ref[tag][i])
+                       for i in range(len(ASTRAL_CASES))
+                       if not got or got[i] != ref[tag][i]), "none"))
+
+        # the point of the test: an ord()-per-code-point loop must NOT reproduce
+        # these digests, or the test could pass against the bug it exists to catch
+        naive = os.path.join(outdir, "naive.py")
+        open(naive, "w", encoding="utf-8").write(
+            "import json\n"
+            "def digest(data):\n"
+            "    h = 2166136261\n"
+            "    for ch in data:\n"
+            "        h ^= ord(ch)\n"
+            "        h = (h * 16777619) & 0xFFFFFFFF\n"
+            "    return format(h & 0xFFFFFFFF, 'x')\n"
+            "print(json.dumps([digest(c) for c in "
+            + astral_cases_literal() + "]))\n")
+        out = subprocess.run([sys.executable, naive], capture_output=True, text=True)
+        naive_got = json.loads(out.stdout.strip()) if out.stdout.strip() else []
+        astral = [i for i, c in enumerate(ASTRAL_CASES) if any(ord(x) > 0xFFFF for x in c)]
+        check("the cases include astral input", bool(astral), astral)
+        check("an ord() loop really fails on the astral cases",
+              all(naive_got[i] != ref["imul"][i] for i in astral),
+              [ASTRAL_CASES[i] for i in astral if naive_got[i] == ref["imul"][i]])
+        # and agrees below U+10000, which is why nothing caught it before
+        bmp = [i for i in range(len(ASTRAL_CASES)) if i not in astral]
+        check("an ord() loop agrees on every BMP case",
+              all(naive_got[i] == ref["imul"][i] for i in bmp),
+              [ASTRAL_CASES[i] for i in bmp if naive_got[i] != ref["imul"][i]])
+
+        # a byte-oriented source must not be handed the code-unit snippet
+        bytes_src = ("function hashBytes(s) {\n"
+                     "  var b = new TextEncoder().encode(s);\n"
+                     "  var h = 2166136261;\n"
+                     "  for (var i = 0; i < b.length; i++) {\n"
+                     "    h ^= b[i];\n"
+                     "    h = Math.imul(h, 16777619) >>> 0;\n"
+                     "  }\n"
+                     "  return h.toString(16);\n"
+                     "}\n")
+        js = os.path.join(outdir, "bytes.js")
+        open(js, "w").write(bytes_src)
+        subprocess.run([node, os.path.join(SCRIPTS, "structure.mjs"), js, struct_path],
+                       capture_output=True)
+        algos = explain.explain(json.load(open(struct_path)))["porting"]["algorithms"]
+        byte_source = algos[0].get("char_source") if algos else None
+        check("a TextEncoder file is reported as byte-oriented",
+              byte_source == "bytes", "got %s" % byte_source)
+        byte_snip = report.port_snippet("FNV-1a 32-bit", "imul", byte_source)
+        check("the byte snippet encodes instead of walking code units",
+              byte_snip and "encode(" in byte_snip and "code_units(" not in byte_snip,
+              byte_snip)
+
+        # and with no evidence at all the snippet names its assumption rather
+        # than presenting one silently
+        unknown = report.port_snippet("FNV-1a 32-bit", "imul", None)
+        check("an unknown char source is stated as an assumption",
+              unknown and "ASSUMPTION" in unknown, unknown)
+    finally:
+        shutil.rmtree(outdir, ignore_errors=True)
+
+
 def test_endpoint_and_storage_recovery():
     """Two facts a reader asks for first: where it calls, and what it remembers.
 
@@ -2116,7 +2299,10 @@ def test_xq_is_a_view_not_an_analysis():
     # the snippet must be report.py's own, so report.md and xq cannot drift apart
     algo = canon["porting"]["algorithms"][0]
     family = algo["families"][0]
-    expected = report.port_snippet(family, algo["multiply_style"])
+    # both findings the snippet depends on, or this compares against a snippet
+    # for a different source than the one xq was asked about
+    expected = report.port_snippet(family, algo["multiply_style"],
+                                   algo.get("char_source"))
     served = json.loads(run_xq(SAMPLE_XRAYJS, "--json", "port", algo["id"]).stdout)
     snippets = {s["family"]: s["python"]
                 for s in served["algorithms"][0]["python_snippets"]}
@@ -2783,6 +2969,7 @@ def main():
     test_custom_anchors()
     test_graceful_on_plain_file()
     test_multiply_style()
+    test_astral_char_encoding()
     test_endpoint_and_storage_recovery()
     test_reachability_ignores_flow_budget()
     test_pipeline_log_records_failure()

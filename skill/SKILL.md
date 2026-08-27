@@ -231,6 +231,8 @@ Everything needed is under `porting`:
 
 - `algorithms[]` - the recognised family, its constants, the line range, and
   `multiply_style` with a `multiply_note` explaining how to reproduce it.
+  `char_source` and `char_source_note` say what one iteration of the loop
+  consumes; `null` means the facts did not decide it, not that it is bytes.
 - `network_contracts[]` - url, method, headers, body shape, credentials mode.
   A hoisted endpoint constant is followed back to its literal, so `url` is the
   address; when that required a lookup the original call-site expression is
@@ -241,7 +243,9 @@ Everything needed is under `porting`:
 
 Then verify: run the original in Node against your port on the same inputs and
 compare outputs. Do not skip this. The failure mode of a bad 32-bit port is
-agreement on short inputs and divergence on long ones.
+agreement on short inputs and divergence on long ones - and the failure mode of
+a bad character loop is agreement on all ASCII and divergence on the first
+emoji, so put an astral character in the inputs you compare.
 
 ### Two 32-bit multiplies, two different answers
 
@@ -258,6 +262,33 @@ int32, `k * h` can exceed 2^53 and the low bits are gone before the truncation
 happens - so the rounding is part of the algorithm, and the sign matters too.
 `report.md` emits the matching snippet; for `mixed` it deliberately emits none,
 because a confident wrong snippet costs more than an absent one.
+
+### charCodeAt is a code unit, ord() is a code point
+
+The multiply decides how a step is computed; this decides what is fed into it,
+and it goes wrong the same way - silently, on inputs a smoke test never reaches.
+`char_source` on the algorithm entry says which unit the source reads:
+
+| source | `char_source` | correct Python feed |
+| --- | --- | --- |
+| `s.charCodeAt(i)` | `utf16-code-units` | UTF-16 code units: split astral code points into surrogate pairs |
+| `s.codePointAt(i)` | `code-points` | `ord(ch)` - already a code point |
+| `new TextEncoder().encode(s)`, `Buffer.from(s)` | `bytes` | `data.encode("utf-8")` |
+| a character reader and a byte encoder in one function | `mixed` | read the loop; the facts do not decide it |
+| nothing that names a unit | `null` | undecided - the snippet says what it assumed |
+
+`charCodeAt(i)` returns a UTF-16 code unit, so a character above U+FFFF arrives
+as its two surrogate halves and costs two iterations. Python's `ord(ch)` returns
+one code point. Those are the same number for every character in the BMP, which
+is the whole trap: an `ord()`-based port passes every ASCII, Hangul and CJK test
+and returns a different digest for the first emoji it sees. Nothing below
+U+10000 can catch it, so the test has to contain an astral character.
+
+Unlike `mixed` multiplies, an undecided `char_source` still gets a snippet: the
+loop and the constants are right, and only the feed is in question. What the
+snippet does instead of guessing quietly is name the assumption in a comment on
+its first line, so the one thing to check against `clean.js` is in front of the
+reader.
 
 ## The query CLI (xq.py)
 
@@ -639,6 +670,11 @@ A custom list **replaces** the defaults, so re-include any built-ins you want.
 
 `PORT_SNIPPETS` is keyed by `(family, multiply_style)`. Use `None` for the style
 when the algorithm has no 32-bit multiply, as with `SHA-256`.
+
+A snippet that consumes characters writes its loop over `{feed}` instead of
+naming a unit. `port_snippet` fills that in from `char_source` and prepends the
+helper and the comment that go with the choice, so one snippet stays correct for
+code units, code points and bytes alike. The per-unit table is `CHAR_FEEDS`.
 
 A new `PORT_SNIPPETS` entry reaches `xq port` as well as `report.md`: `xq`
 imports `report.port_snippet` rather than keeping its own table.

@@ -860,7 +860,8 @@ def cmd_port(run, args):
     def snippets_for(algo):
         found = []
         for family in algo.get("families") or []:
-            snippet = report.port_snippet(family, algo.get("multiply_style"))
+            snippet = report.port_snippet(family, algo.get("multiply_style"),
+                                          algo.get("char_source"))
             if snippet:
                 found.append({"family": family, "python": snippet})
         return found
@@ -897,6 +898,15 @@ def cmd_port(run, args):
         if algo.get("multiply_style"):
             out.append("  multiply:  %s -- %s" % (algo["multiply_style"],
                                                   algo.get("multiply_note") or ""))
+        # Alongside the multiply, and stated as undetermined when it is: the
+        # snippet below assumes a unit in that case and says so.
+        if algo.get("char_source"):
+            out.append("  char unit: %s -- %s" % (algo["char_source"],
+                                                  algo.get("char_source_note") or ""))
+        elif algo.get("loops"):
+            out.append("  char unit: not determined -- no charCodeAt, codePointAt or "
+                       "byte encoder recorded here; read the loop in clean.js. The "
+                       "snippet below states what it assumed.")
         for ret in algo.get("returns") or []:
             out.append("  returns:   %s" % ret)
         for snippet in snippets_for(algo):

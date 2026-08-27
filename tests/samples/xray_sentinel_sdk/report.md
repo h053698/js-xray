@@ -343,6 +343,8 @@ Calls: `n`, `btoa`
 
 32-bit multiply style: **imul** - Math.imul(a, b) -- an exact 32-bit product. Port as (a * b) & 0xFFFFFFFF in Python, or uint32 multiply in Go/Rust.
 
+Character unit: **utf16-code-units** - charCodeAt(i) -- UTF-16 code units, so a character above U+FFFF is two iterations of its two surrogate halves. Python's ord(ch) gives one code point instead and diverges there; iterate over UTF-16 code units.
+
 Constants: 2166136261, 16777619, 2246822507, 3266489909
 
 Returns `(e >>> 0).toString(16).padStart(8, "0")`
@@ -350,9 +352,25 @@ Returns `(e >>> 0).toString(16).padStart(8, "0")`
 FNV-1a 32-bit in Python:
 
 ```python
+# The source reads characters with charCodeAt, so the loop consumes
+# UTF-16 code units. data is a str.
+
+def code_units(s):
+    # What JS charCodeAt(i) returns: UTF-16 code units, so a character above
+    # U+FFFF arrives as its two surrogate halves. ord(ch) would yield one
+    # code point instead and diverge there -- and only there.
+    for ch in s:
+        cp = ord(ch)
+        if cp > 0xFFFF:
+            cp -= 0x10000
+            yield 0xD800 + (cp >> 10)
+            yield 0xDC00 + (cp & 0x3FF)
+        else:
+            yield cp
+
 h = 2166136261
-for ch in data:
-    h ^= ord(ch)
+for c in code_units(data):
+    h ^= c
     h = (h * 16777619) & 0xFFFFFFFF
 ```
 
@@ -409,6 +427,7 @@ Environment values the module reads. A port has to supply these:
 
 - **32-bit integer semantics** - JavaScript bitwise operators truncate to int32 and >>> yields uint32. In Python mask with & 0xFFFFFFFF after every step; in Go/Rust use uint32 types.
 - **32-bit multiply style: imul** - Math.imul(a, b) -- an exact 32-bit product. Port as (a * b) & 0xFFFFFFFF in Python, or uint32 multiply in Go/Rust.
+- **charCodeAt is UTF-16 code units, not code points** - charCodeAt(i) returns a UTF-16 code unit, so a character above U+FFFF (emoji, rare CJK, most symbols) is two iterations of its two surrogate halves. Python's ord(ch) returns one code point, which is the same number for every character in the BMP and a different one above it: an ord()-based port passes every ASCII, Hangul and CJK test and then returns a different digest for the first emoji it sees. Iterate over UTF-16 code units instead -- split astral code points into surrogates, or read pairs out of s.encode('utf-16-le') -- and put an astral case in the tests, since no ASCII input can catch this.
 - **request shape is part of the contract** - Header order, credentials mode and exact body encoding are often validated server-side. Copy them from the contract rather than assuming defaults.
 - **environment values are inputs, not constants** - The listed browser properties feed the algorithm. A port must supply plausible values with matching types and formatting, since they change the output.
 

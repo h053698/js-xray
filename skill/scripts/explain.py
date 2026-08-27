@@ -759,6 +759,69 @@ MULTIPLY_STYLE_NOTE = {
               "Read the source line by line; no single rule ports it."),
 }
 
+# What one iteration of a character loop consumes. The multiply style decides how
+# a step is computed; this decides what is fed into it, and the two go wrong the
+# same way -- silently, and only on inputs a smoke test does not reach. ord() in
+# place of charCodeAt agrees on the entire BMP, so ASCII, Hangul and CJK tests all
+# pass and the digest changes the first time an emoji arrives.
+CHAR_SOURCE_NOTE = {
+    "utf16-code-units": ("charCodeAt(i) -- UTF-16 code units, so a character above "
+                         "U+FFFF is two iterations of its two surrogate halves. "
+                         "Python's ord(ch) gives one code point instead and diverges "
+                         "there; iterate over UTF-16 code units."),
+    "code-points": ("codePointAt(i) -- whole code points, which is what Python's "
+                    "ord(ch) already gives. Note that a JS loop stepping by 1 over "
+                    "codePointAt visits the trailing surrogate too; check the stride."),
+    "bytes": ("TextEncoder / Buffer -- the input is encoded to bytes before hashing, "
+              "so the loop consumes bytes and not characters. Encode with the same "
+              "encoding the source used before porting the loop."),
+    "mixed": ("Both charCodeAt and a byte encoder appear in this function, so which "
+              "one feeds the hash is not decidable from the AST facts. Read the loop "
+              "in clean.js before porting it."),
+}
+
+# Substrings in a recorded call path that fix the unit. Ordered longest-first
+# within a group so codePointAt is not read as charCodeAt's prefix.
+CHAR_SOURCE_MARKERS = (
+    ("utf16-code-units", ("charCodeAt", "charAt", "fromCharCode")),
+    ("code-points", ("codePointAt", "fromCodePoint")),
+    ("bytes", ("TextEncoder", "Buffer.from", "encodeInto")),
+)
+
+
+def rollup_char_source(fn, by_id):
+    """What a character loop in this function consumes, from the calls recorded.
+
+    Same rollup as rollup_arith and for the same reason: the loop is usually in a
+    nested closure while the caller is the function a reader recognises.
+
+    Returns None when nothing in the function names a unit. That is a real answer
+    -- "the facts do not say" -- and it is reported as an assumption downstream
+    rather than resolved by a guess here.
+    """
+    found = set()
+    stack = [fn]
+    seen = set()
+    while stack:
+        cur = stack.pop()
+        if id(cur) in seen:
+            continue
+        seen.add(id(cur))
+        paths = list(cur.get("calls") or []) + list(cur.get("globals") or [])
+        for path in paths:
+            for unit, markers in CHAR_SOURCE_MARKERS:
+                if any(m in path for m in markers):
+                    found.add(unit)
+        for cid in cur.get("_children", []) or []:
+            child = by_id.get(cid)
+            if child is not None:
+                stack.append(child)
+    # charCodeAt alongside fromCharCode is one unit, not two; only a byte encoder
+    # next to a character reader is a genuine ambiguity about what gets hashed.
+    if len(found) > 1:
+        return "mixed"
+    return found.pop() if found else None
+
 
 def rollup_arith(fn, by_id):
     """Multiplication style for a function including its inline closures.
@@ -805,6 +868,7 @@ def porting_spec(structure, by_id, roles_by_id):
     for fn in structure.get("functions", []) or []:
         if fn.get("algorithms"):
             arith = rollup_arith(fn, by_id)
+            char_source = rollup_char_source(fn, by_id)
             spec["algorithms"].append({
                 "function": display_name(fn, by_id),
                 "id": fn["id"],
@@ -816,6 +880,10 @@ def porting_spec(structure, by_id, roles_by_id):
                 "loops": (fn.get("control") or {}).get("loops", 0),
                 "multiply_style": arith["multiply_style"],
                 "multiply_note": MULTIPLY_STYLE_NOTE.get(arith["multiply_style"]),
+                # The unit the loop consumes, on the same footing as the multiply
+                # style: null means the facts did not say, not that it is bytes.
+                "char_source": char_source,
+                "char_source_note": CHAR_SOURCE_NOTE.get(char_source),
             })
         for net in fn.get("network", []) or []:
             entry = dict(net)
@@ -862,6 +930,38 @@ def porting_spec(structure, by_id, roles_by_id):
                        "where to_int32 reinterprets the low 32 bits as signed. Masking "
                        "an exact product instead gives a different digest."),
         })
+
+    # The encoding trap, reported the same way and for the same reason as the
+    # multiply: it is the other half of "what the loop does per step", it fails
+    # only above the BMP, and warning about the multiply while staying silent
+    # here is what let ord()-based snippets ship. Only raised when a character
+    # reader is actually present, so a byte-oriented file is not told about a
+    # trap it cannot hit.
+    char_sources = {a.get("char_source") for a in spec["algorithms"]}
+    if {"utf16-code-units", "mixed"} & char_sources:
+        spec["pitfalls"].append({
+            "issue": "charCodeAt is UTF-16 code units, not code points",
+            "detail": ("charCodeAt(i) returns a UTF-16 code unit, so a character above "
+                       "U+FFFF (emoji, rare CJK, most symbols) is two iterations of its "
+                       "two surrogate halves. Python's ord(ch) returns one code point, "
+                       "which is the same number for every character in the BMP and a "
+                       "different one above it: an ord()-based port passes every ASCII, "
+                       "Hangul and CJK test and then returns a different digest for the "
+                       "first emoji it sees. Iterate over UTF-16 code units instead -- "
+                       "split astral code points into surrogates, or read pairs out of "
+                       "s.encode('utf-16-le') -- and put an astral case in the tests, "
+                       "since no ASCII input can catch this."),
+        })
+    for algo in spec["algorithms"]:
+        if algo.get("char_source") == "mixed":
+            spec["pitfalls"].append({
+                "issue": "character unit is undecided in " + algo["function"],
+                "detail": ("Both charCodeAt and a byte encoder appear here, so the AST "
+                           "facts do not say whether the hash consumes UTF-16 code units "
+                           "or encoded bytes. The two agree on ASCII and differ on "
+                           "everything else, so read the loop in clean.js rather than "
+                           "taking the snippet's assumption."),
+            })
     if spec["network_contracts"]:
         spec["pitfalls"].append({
             "issue": "request shape is part of the contract",

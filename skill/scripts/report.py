@@ -28,11 +28,76 @@ INT32_HELPER = (
     "    return h - 0x100000000 if h >= 0x80000000 else h"
 )
 
+# The other half of a correct port, and the one that hides longer: what a single
+# iteration of the loop consumes. JS charCodeAt(i) yields a UTF-16 code unit, so
+# an astral character (emoji, rare CJK, most symbols above U+FFFF) is two
+# iterations of two surrogate halves. Python's ord(ch) yields one code point, so
+# a snippet written with ord() agrees on the whole BMP -- every ASCII and Hangul
+# and CJK test passes -- and returns a different digest the first time an emoji
+# reaches it. A snippet that survives only ASCII tests is the failure this table
+# exists to prevent, so the character feed is chosen the same way the multiply
+# is: from what the source actually does, and stated when it is not known.
+CODE_UNITS_HELPER = (
+    "def code_units(s):\n"
+    "    # What JS charCodeAt(i) returns: UTF-16 code units, so a character above\n"
+    "    # U+FFFF arrives as its two surrogate halves. ord(ch) would yield one\n"
+    "    # code point instead and diverge there -- and only there.\n"
+    "    for ch in s:\n"
+    "        cp = ord(ch)\n"
+    "        if cp > 0xFFFF:\n"
+    "            cp -= 0x10000\n"
+    "            yield 0xD800 + (cp >> 10)\n"
+    "            yield 0xDC00 + (cp & 0x3FF)\n"
+    "        else:\n"
+    "            yield cp"
+)
+
+# Per char_source: the expression that feeds the loop, whether CODE_UNITS_HELPER
+# has to come with it, and the comment that says why -- or, when explain.py found
+# no evidence, what the snippet is assuming and how to check it.
+CHAR_FEEDS = {
+    "utf16-code-units": (
+        "code_units(data)", True,
+        "# The source reads characters with charCodeAt, so the loop consumes\n"
+        "# UTF-16 code units. data is a str.",
+    ),
+    "code-points": (
+        "(ord(ch) for ch in data)", False,
+        "# The source reads codePointAt, so one Python character is one iteration\n"
+        "# and ord() is the right unit. data is a str.",
+    ),
+    "bytes": (
+        'data.encode("utf-8")', False,
+        "# The source encodes to bytes (TextEncoder / Buffer) before hashing, so\n"
+        "# the loop consumes UTF-8 bytes, not characters. Check the encoding in\n"
+        "# clean.js if the source picked something other than UTF-8.",
+    ),
+    "mixed": (
+        "code_units(data)", True,
+        "# ASSUMPTION: charCodeAt feeds this loop. Both charCodeAt and a byte\n"
+        "# encoder appear in this function, so which one reaches the hash is not\n"
+        "# decidable from the AST facts -- read the loop in clean.js. If it hashes\n"
+        "# bytes, feed data.encode(\"utf-8\") instead; the digests differ on any\n"
+        "# non-ASCII input.",
+    ),
+    None: (
+        "code_units(data)", True,
+        "# ASSUMPTION: charCodeAt feeds this loop (UTF-16 code units), which is\n"
+        "# what most hand-rolled JS hashes do. No charCodeAt / codePointAt /\n"
+        "# TextEncoder call was recorded for this function, so this is not\n"
+        "# evidence -- check the loop in clean.js. If it hashes bytes, feed\n"
+        "# data.encode(\"utf-8\"); if it reads codePointAt, feed ord(ch) directly.\n"
+        "# All three agree on ASCII and disagree above it.",
+    ),
+}
+
+# A {feed} in a snippet marks it as character-driven: port_snippet fills it from
+# CHAR_FEEDS and prepends the helper and the note that go with the choice.
 PORT_SNIPPETS = {
     ("FNV-1a 32-bit", "imul"): (
         "h = 2166136261\n"
-        "for ch in data:\n"
-        "    h ^= ord(ch)\n"
+        "for c in {feed}:\n"
+        "    h ^= c\n"
         "    h = (h * 16777619) & 0xFFFFFFFF"
     ),
     # JS: h = h * 16777619 >>> 0. The xor leaves a signed int32, and the float64
@@ -41,8 +106,8 @@ PORT_SNIPPETS = {
     ("FNV-1a 32-bit", "truncated-float"): (
         INT32_HELPER + "\n\n"
         "h = 2166136261\n"
-        "for ch in data:\n"
-        "    h = (h ^ ord(ch)) & 0xFFFFFFFF\n"
+        "for c in {feed}:\n"
+        "    h = (h ^ c) & 0xFFFFFFFF\n"
         "    h = int(float(to_int32(h)) * 16777619) & 0xFFFFFFFF"
     ),
     ("murmur3 fmix32", "imul"): (
@@ -66,23 +131,48 @@ PORT_SNIPPETS = {
     ("MD5", None): "import hashlib\nhashlib.md5(data).hexdigest()",
     ("SHA-256", None): "import hashlib\nhashlib.sha256(data).hexdigest()",
     ("CRC-32", None): "import zlib\nzlib.crc32(data) & 0xFFFFFFFF",
-    ("djb2", None): "h = 5381\nfor ch in data:\n    h = ((h * 33) + ord(ch)) & 0xFFFFFFFF",
+    # djb2 is defined over bytes in its C original (unsigned char *str) and is
+    # almost always written over charCodeAt in JS, so the unit genuinely depends
+    # on the source rather than on the algorithm. It takes {feed} for that
+    # reason: with evidence the snippet follows the source, and without evidence
+    # it says which of the two it picked.
+    ("djb2", None): "h = 5381\nfor c in {feed}:\n    h = ((h * 33) + c) & 0xFFFFFFFF",
     ("LCG", None): "state = (state * 1664525 + 1013904223) & 0xFFFFFFFF",
 }
 
 
-def port_snippet(family, style):
+def port_snippet(family, style, char_source=None):
     """Snippet for a family, matched to how the source multiplies.
 
     Returns None when the style is unknown or mixed rather than guessing: a wrong
     snippet is worse than none, because it looks authoritative and fails only on
     longer inputs.
+
+    char_source is explain.py's finding about what one iteration consumes. For a
+    character-driven family it selects the feed; unlike the multiply style it does
+    not withhold the snippet when unknown, because the loop and the constants are
+    still right and the alternative -- no snippet at all -- leaves the reader with
+    nothing. What it does instead is name the assumption in the snippet, so the
+    one line a reader has to check is in front of them.
     """
     if (family, None) in PORT_SNIPPETS:
-        return PORT_SNIPPETS[(family, None)]
+        return fill_feed(PORT_SNIPPETS[(family, None)], char_source)
     if style in ("imul", "truncated-float"):
-        return PORT_SNIPPETS.get((family, style))
+        snippet = PORT_SNIPPETS.get((family, style))
+        return fill_feed(snippet, char_source) if snippet else None
     return None
+
+
+def fill_feed(snippet, char_source):
+    """Resolve {feed} in a character-driven snippet, or pass the snippet through."""
+    if "{feed}" not in snippet:
+        return snippet
+    feed, needs_helper, note = CHAR_FEEDS.get(char_source, CHAR_FEEDS[None])
+    parts = [note]
+    if needs_helper:
+        parts.append(CODE_UNITS_HELPER)
+    parts.append(snippet.replace("{feed}", feed))
+    return "\n\n".join(parts)
 
 
 CONF_MARK = {"high": "high", "medium": "medium", "low": "low", "none": "unknown"}
@@ -325,6 +415,21 @@ def render(data, args):
                 L.append("32-bit multiply style: **%s** - %s" % (
                     algo["multiply_style"], algo.get("multiply_note") or ""))
                 L.append("")
+            # Printed next to the multiply style, because it is the same class of
+            # mistake: a per-step detail that agrees on ASCII and changes the
+            # digest later. When the facts did not decide it, the reader is told
+            # that too -- the snippet below is assuming one of the two.
+            if algo.get("char_source"):
+                L.append("Character unit: **%s** - %s" % (
+                    algo["char_source"], algo.get("char_source_note") or ""))
+                L.append("")
+            elif algo.get("loops"):
+                L.append("Character unit: **not determined** - no charCodeAt, "
+                         "codePointAt or byte encoder was recorded for this function, "
+                         "so what one iteration consumes has to be read from "
+                         + BT + "clean.js" + BT + ". The snippet below states which "
+                         "unit it assumed.")
+                L.append("")
             if algo.get("constants"):
                 L.append("Constants: " + ", ".join(str(c) for c in algo["constants"]))
                 L.append("")
@@ -332,7 +437,8 @@ def render(data, args):
                 L.append("Returns " + BT + algo["returns"][0] + BT)
                 L.append("")
             for family in algo["families"]:
-                snippet = port_snippet(family, algo.get("multiply_style"))
+                snippet = port_snippet(family, algo.get("multiply_style"),
+                                       algo.get("char_source"))
                 if snippet:
                     L.append("%s in Python:" % family)
                     L.append("")
