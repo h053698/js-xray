@@ -618,25 +618,30 @@ Two limits worth repeating to whoever reads your explanation:
 
 ## Requirements
 
-WebCrack needs Node `>=22 <23` or `>=24 <25`; its `isolated-vm` dependency ships
-per-ABI native binaries, so **Node 25/26+ will not build it**.
+For a new device, prefer the repository's one-command Bun installer:
 
 ```bash
-fnm install 24          # or: volta install node@24
-bun install             # webcrack@2.16.0, pinned
+bun create h053698/js-xray "$HOME/.local/share/js-xray" --no-install --no-git && bun run --cwd "$HOME/.local/share/js-xray" setup
 ```
 
-`scripts/node_env.py` finds a compatible Node by scanning fnm, volta and nvm, so
-no shell activation is needed. Override with `JSXRAY_NODE=/path/to/node`.
+It installs pinned dependencies, `xq`, the `js-xray` command, and this Codex
+skill. It also prepares Node 24: reusing a compatible runtime, asking fnm/Volta
+to install one, or downloading and checksum-verifying a portable Node runtime.
+Python 3 and Bun are the only prerequisites.
+
+Inside an existing checkout, the equivalent command is:
 
 ```bash
-python3 scripts/node_env.py --json
-python3 tests/test_xray.py      # no pytest needed
+bun run setup
 ```
 
-Without a compatible Node the pipeline still runs: it analyzes the raw source,
-`structure` and `explain` degrade to empty, and the report says so. Degraded,
-never silently wrong.
+WebCrack needs Node `>=22 <23` or `>=24 <25`; its `isolated-vm` dependency
+does not support Node 25/26. `scripts/node_env.py` scans the portable runtime,
+fnm, Volta, nvm, and PATH. Override it with
+`JSXRAY_NODE=/path/to/node`.
+
+Without a compatible Node the pipeline still runs on the raw source and records
+the degraded stage instead of silently claiming deobfuscation succeeded.
 
 ## Two inlining passes
 

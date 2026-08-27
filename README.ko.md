@@ -26,14 +26,46 @@ WebCrack과 Babel AST 패스를 조합해 문자열 배열, 제어 흐름 평탄
 ## 요구 사항
 
 - Python 3
-- Bun 또는 npm
-- Node.js 24.x 권장
+- Bun
 
-WebCrack의 `isolated-vm` 네이티브 바이너리 때문에 Node `>=22 <23` 또는 `>=24 <25`가 필요합니다. Node 25/26 이상은 지원하지 않습니다. 실행 시 `node_env.py`가 fnm, Volta, nvm 설치 경로에서 호환 Node를 자동으로 찾습니다.
+WebCrack의 `isolated-vm` 네이티브 바이너리 때문에 Node `>=22 <23` 또는 `>=24 <25`가 필요합니다. 권장 설치기는 호환 Node가 있으면 재사용하고, fnm/Volta가 있으면 Node 24를 설치하며, 둘 다 없으면 SHA-256을 검증한 휴대용 Node 24를 내려받습니다. 사용자가 Node를 따로 설정할 필요는 없습니다.
+
+휴대용 런타임 자동 설치는 macOS와 Linux의 arm64/x64를 지원합니다. 다른 환경에서는 `JSXRAY_NODE`로 호환 Node 경로를 지정하면 나머지 설치를 그대로 사용할 수 있습니다.
 
 ## 설치
 
-### 1. 저장소와 의존성
+### 원클릭 설치(권장)
+
+```bash
+bun create h053698/js-xray "$HOME/.local/share/js-xray" --no-install --no-git && bun run --cwd "$HOME/.local/share/js-xray" setup
+```
+
+이 한 줄을 그대로 붙여넣으면 저장소 다운로드, 고정된 의존성 설치, 호환 Node 24 준비, `js-xray`·`xq` 명령 등록, Codex 스킬 등록까지 처리합니다. `--no-install`은 WebCrack의 네이티브 의존성을 설치하기 전에 js-xray가 먼저 Node 24를 준비하도록 하기 위한 안전장치입니다.
+
+설치가 끝나면 Codex를 다시 시작하고 다음처럼 실행합니다.
+
+```bash
+js-xray path/to/target.js
+xq path/to/target.xrayjs summary
+```
+
+`~/.local/bin`이 PATH에 없다면 설치기가 셸 설정에 추가할 정확한 명령을 출력합니다.
+
+이미 저장소를 받은 상태라면 다시 다운로드하지 않고 다음 한 줄만 실행하면 됩니다.
+
+```bash
+bun run setup
+```
+
+실제 변경 없이 설치 내용을 미리 확인할 수도 있습니다.
+
+```bash
+bun run setup --dry-run
+```
+
+### 수동 설치
+
+#### 1. 저장소와 의존성
 
 ```bash
 git clone https://github.com/h053698/js-xray.git
@@ -53,7 +85,7 @@ nvm install 24
 
 npm을 사용하려면 `npm install`을 실행해도 됩니다. TOON 참조 구현을 사용하는 전체 테스트까지 실행하려면 devDependency도 설치되어 있어야 합니다.
 
-### 2. xq 명령 설치
+#### 2. xq 명령 설치
 
 ```bash
 sh scripts/install-xq.sh --dry-run
@@ -73,7 +105,7 @@ PATH에 등록하지 않으려면 아래처럼 직접 실행할 수 있습니다
 python3 skill/scripts/xq.py summary
 ```
 
-### 3. Codex 스킬 등록
+#### 3. Codex 스킬 등록
 
 Codex가 `$js-xray` 스킬로 자동 인식하게 하려면 저장소의 `skill/` 디렉터리를 Codex 스킬 경로에 연결합니다.
 
@@ -92,7 +124,7 @@ $js-xray path/to/target.js
 
 스킬을 쓰지 않아도 CLI 전체 기능은 사용할 수 있습니다.
 
-### 4. 토큰 통계 정확도 높이기(선택)
+#### 4. 토큰 통계 정확도 높이기(선택)
 
 ```bash
 pip install tiktoken
@@ -103,10 +135,12 @@ pip install tiktoken
 ## 빠른 시작
 
 ```bash
-python3 skill/scripts/xray.py path/to/target.js
+js-xray path/to/target.js
 ```
 
 기본적으로 입력 파일 옆에 `target.xrayjs/`가 생성됩니다.
+
+명령 설치를 하지 않았다면 `python3 skill/scripts/xray.py path/to/target.js`를 사용하면 됩니다.
 
 ```bash
 xq path/to/target.xrayjs summary

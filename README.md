@@ -26,14 +26,46 @@ The cost calculation uses the Claude Sonnet 5 rates applied for this benchmark: 
 ## Requirements
 
 - Python 3
-- Bun or npm
-- Node.js 24.x recommended
+- Bun
 
-WebCrack's native `isolated-vm` dependency requires Node `>=22 <23` or `>=24 <25`. Node 25 and 26 are not supported. At runtime, `node_env.py` searches fnm, Volta, and nvm installations for a compatible Node binary.
+WebCrack's native `isolated-vm` dependency requires Node `>=22 <23` or `>=24 <25`. The recommended installer reuses a compatible Node, installs Node 24 through fnm/Volta when available, or downloads a verified portable Node 24 runtime. You do not need to configure Node manually.
+
+The automatic portable-runtime path supports macOS and Linux on arm64 or x64. Other platforms can use the installer when `JSXRAY_NODE` points to a compatible Node.
 
 ## Installation
 
-### 1. Clone and install dependencies
+### One-command install (recommended)
+
+```bash
+bun create h053698/js-xray "$HOME/.local/share/js-xray" --no-install --no-git && bun run --cwd "$HOME/.local/share/js-xray" setup
+```
+
+That single copy-paste command downloads js-xray, installs its pinned dependencies, prepares a compatible Node 24 runtime when needed, installs the `js-xray` and `xq` commands, and registers the Codex skill. `--no-install` deliberately lets js-xray prepare Node 24 before installing WebCrack's native dependency.
+
+After it finishes, restart Codex and run:
+
+```bash
+js-xray path/to/target.js
+xq path/to/target.xrayjs summary
+```
+
+If `~/.local/bin` is not already on PATH, the installer prints the exact line to add to your shell profile.
+
+Already cloned the repository? Run the same setup without downloading it again:
+
+```bash
+bun run setup
+```
+
+Preview every action without writing anything:
+
+```bash
+bun run setup --dry-run
+```
+
+### Manual installation
+
+#### 1. Clone and install dependencies
 
 ```bash
 git clone https://github.com/h053698/js-xray.git
@@ -53,7 +85,7 @@ nvm install 24
 
 Run `npm install` if you prefer npm. Dev dependencies are required to run the complete test suite, including the TOON reference-implementation checks.
 
-### 2. Install the xq command
+#### 2. Install the xq command
 
 ```bash
 sh scripts/install-xq.sh --dry-run
@@ -73,7 +105,7 @@ You can also run the script directly without installing it:
 python3 skill/scripts/xq.py summary
 ```
 
-### 3. Register the Codex skill
+#### 3. Register the Codex skill
 
 To make Codex discover `$js-xray`, link the repository's `skill/` directory into your Codex skills directory:
 
@@ -92,7 +124,7 @@ $js-xray path/to/target.js
 
 The CLI remains fully usable without registering the skill.
 
-### 4. Improve token-stat accuracy (optional)
+#### 4. Improve token-stat accuracy (optional)
 
 ```bash
 pip install tiktoken
@@ -103,10 +135,12 @@ Without `tiktoken`, the TOON savings report falls back to character counts. Anal
 ## Quick start
 
 ```bash
-python3 skill/scripts/xray.py path/to/target.js
+js-xray path/to/target.js
 ```
 
 By default, this creates `target.xrayjs/` next to the input file.
+
+Without the command installer, use `python3 skill/scripts/xray.py path/to/target.js`.
 
 ```bash
 xq path/to/target.xrayjs summary
