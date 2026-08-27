@@ -134,13 +134,16 @@
     </mxCell>
 
     <!-- savings label -->
-    <mxCell id="savings" value="A → B&lt;br&gt;&lt;b&gt;토큰 74% 절감&lt;/b&gt;&lt;br&gt;&lt;b&gt;$13.48 절약&lt;/b&gt;&lt;br&gt;속도 2.4배" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=13;fontStyle=1;" vertex="1" parent="1">
+    <mxCell id="savings" value="&lt;b&gt;C: 최고 속도&lt;/b&gt;&lt;br&gt;63.1% 단축 · 2.71배&lt;br&gt;&lt;b&gt;B: 최저 비용&lt;/b&gt;&lt;br&gt;토큰 74.5% · 비용 74.2% 절감" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=13;fontStyle=1;" vertex="1" parent="1">
       <mxGeometry x="1185" y="300" width="140" height="80" as="geometry" />
     </mxCell>
     <mxCell id="esav1" value="" style="edgeStyle=orthogonalEdgeStyle;endArrow=block;endFill=1;strokeColor=#d6b656;" edge="1" source="armA" target="savings" parent="1">
       <mxGeometry relative="1" as="geometry" />
     </mxCell>
     <mxCell id="esav2" value="" style="edgeStyle=orthogonalEdgeStyle;endArrow=block;endFill=1;strokeColor=#d6b656;" edge="1" source="armB" target="savings" parent="1">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+    <mxCell id="esav3" value="" style="edgeStyle=orthogonalEdgeStyle;endArrow=block;endFill=1;strokeColor=#d6b656;" edge="1" source="armC" target="savings" parent="1">
       <mxGeometry relative="1" as="geometry" />
     </mxCell>
 

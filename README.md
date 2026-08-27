@@ -17,18 +17,25 @@ We benchmarked the same Python porting task with Claude Sonnet 5 on the same obf
 - **Agent task:** reverse engineer that behavior, explain the state and loop structure, and implement equivalent local Python functions `sign(input, salt)` and `digest(input)` without calling the original JavaScript at runtime.
 - **Correctness check:** compare the Python output with the original JavaScript on 13 cases covering empty input, ASCII, Korean text, emoji, surrogate boundaries, U+10FFFF, and a 200-character input. Both arms passed all 13 cases.
 
-The benchmark compares investigation methods, not different models or prompts: the raw arm received only the obfuscated file, while the js-xray arm received the same file plus its precomputed `.xrayjs` artifacts and permission to query them with `xq`.
+The benchmark compares investigation methods, not different models or prompts:
 
-| Metric | Raw JavaScript only | js-xray + xq | Improvement |
-| --- | ---: | ---: | ---: |
-| Correctness | 13/13 | 13/13 | Same |
-| Wall time | 16m 5s | 6m 50s | 2.4× faster |
-| Total tokens | 8,920,677 | 2,273,771 | 74.5% fewer |
-| API cost | $18.18 | $4.70 | $13.48 saved |
-| Tool calls | 89 | 44 | 50.6% fewer |
-| Port implementation started | call #76 | call #9 | Much earlier |
+- **A — Raw:** the obfuscated file only; no `xq`, no skill.
+- **B — Artifacts + xq:** the same file plus precomputed `.xrayjs` artifacts and permission to use `xq`.
+- **C — Artifacts + xq + skill:** the same B setup with the js-xray Codex skill loaded, matching the intended installed experience.
 
-The cost calculation uses the Claude Sonnet 5 rates applied for this benchmark: $2/MTok input and $10/MTok output. See [BENCHMARK.md](BENCHMARK.md) for the complete setup, token-accounting method, and the third arm that also loaded the skill. See [BENCHMARK.drawio](BENCHMARK.drawio) for an editable pipeline and benchmark diagram.
+| Metric | A — Raw | B — js-xray + xq | C — js-xray + xq + skill | Strongest result vs A |
+| --- | ---: | ---: | ---: | ---: |
+| Correctness | 13/13 | 13/13 | 13/13 | No accuracy trade-off |
+| Wall time | 16m 5s | 6m 50s | **5m 56s** | **C: 63.1% less time, 2.71× faster** |
+| Total tokens | 8,920,677 | **2,273,771** | 2,478,064 | **B: 74.5% fewer, 3.92× efficiency** |
+| API cost | $18.18 | **$4.70** | $5.10 | **B: 74.2% cheaper; C: 71.9% cheaper** |
+| Tool calls | 89 | **44** | **44** | **50.6% fewer** |
+| Peak context/turn | 162,008 | **74,273** | 83,160 | **B: 54.2% lower** |
+| Port implementation started | call #76 | **call #9** | call #12 | **B: 8.44× earlier; C: 6.33× earlier** |
+
+**Bottom line:** loading the full skill produced the fastest completed port—**5m 56s instead of 16m 5s**—while still cutting total token use by **72.2%** and estimated API cost by **71.9%**. The lean B configuration used the fewest tokens and lowest cost. Compared with B, the skill added about **9.0% tokens / 8.7% cost** but finished **13.2% faster**.
+
+The cost calculation uses the Claude Sonnet 5 rates applied for this benchmark: $2/MTok input and $10/MTok output. See [BENCHMARK.md](BENCHMARK.md) for the complete setup and token-accounting method. See [BENCHMARK.drawio](BENCHMARK.drawio) for an editable pipeline and benchmark diagram.
 
 > This is one controlled benchmark. Absolute results vary with file complexity, model, caching, and the tool environment.
 
