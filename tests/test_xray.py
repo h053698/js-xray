@@ -2660,6 +2660,7 @@ def test_xq_resolves_its_target():
 
 
 INSTALLER = os.path.join(ROOT, "scripts", "install-xq.sh")
+SETUP_INSTALLER = os.path.join(ROOT, "scripts", "setup.mjs")
 
 
 def test_install_xq_script():
@@ -2773,6 +2774,128 @@ def test_install_xq_script():
         before = os.path.realpath(real) if os.path.lexists(real) else None
         check("the suite never wrote to ~/.local/bin",
               before is None or before == os.path.realpath(source), before)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_one_command_setup():
+    """The Bun setup installs both commands and the Codex skill in an isolated HOME."""
+    print("one-command Bun setup")
+    bun = shutil.which("bun")
+    node, _ver = node_env.resolve()
+    check("setup.mjs is present", os.path.isfile(SETUP_INSTALLER), SETUP_INSTALLER)
+    check("Bun is available for the installer test", bool(bun), bun)
+    check("a compatible Node is available for the isolated test", bool(node), node)
+    if not bun or not node or not os.path.isfile(SETUP_INSTALLER):
+        return
+
+    package = json.load(open(os.path.join(ROOT, "package.json")))
+    check("package exposes the setup script",
+          package.get("scripts", {}).get("setup") == "bun run scripts/setup.mjs",
+          package.get("scripts", {}))
+
+    tmp = tempfile.mkdtemp(prefix="jsxray_bun_setup_")
+    fake_home = os.path.join(tmp, "home")
+    fake_bin = os.path.join(fake_home, ".local", "bin")
+    fake_codex = os.path.join(fake_home, ".codex")
+    env = dict(os.environ,
+               HOME=fake_home,
+               CODEX_HOME=fake_codex,
+               JSXRAY_BIN_DIR=fake_bin,
+               JSXRAY_NODE=node)
+
+    def setup(*extra):
+        return subprocess.run([bun, SETUP_INSTALLER] + list(extra),
+                              capture_output=True, text=True, cwd=ROOT, env=env)
+
+    try:
+        proc = setup("--dry-run")
+        check("one-command setup dry run succeeds", proc.returncode == 0,
+              (proc.returncode, proc.stdout[-300:], proc.stderr[-300:]))
+        check("one-command setup dry run explains all three links",
+              "would link" in proc.stdout
+              and os.path.join(fake_bin, "xq") in proc.stdout
+              and os.path.join(fake_bin, "js-xray") in proc.stdout
+              and os.path.join(fake_codex, "skills", "js-xray") in proc.stdout,
+              proc.stdout[-600:])
+        check("one-command setup dry run writes nothing",
+              not os.path.exists(fake_home), fake_home)
+
+        proc = setup()
+        xq_link = os.path.join(fake_bin, "xq")
+        xray_link = os.path.join(fake_bin, "js-xray")
+        skill_link = os.path.join(fake_codex, "skills", "js-xray")
+        check("one-command setup succeeds", proc.returncode == 0,
+              (proc.returncode, proc.stdout[-300:], proc.stderr[-300:]))
+        check("one-command setup installs xq",
+              os.path.islink(xq_link)
+              and os.path.realpath(xq_link) == os.path.realpath(os.path.join(SCRIPTS, "xq.py")),
+              xq_link)
+        check("one-command setup installs js-xray",
+              os.path.islink(xray_link)
+              and os.path.realpath(xray_link) == os.path.realpath(os.path.join(SCRIPTS, "xray.py")),
+              xray_link)
+        check("one-command setup registers the Codex skill",
+              os.path.islink(skill_link)
+              and os.path.realpath(skill_link) == os.path.realpath(os.path.join(ROOT, "skill")),
+              skill_link)
+
+        proc = setup()
+        check("one-command setup is idempotent",
+              proc.returncode == 0
+              and "xq already installed" in proc.stdout
+              and "js-xray already installed" in proc.stdout
+              and "skill already installed" in proc.stdout,
+              (proc.returncode, proc.stdout[-500:], proc.stderr[-300:]))
+
+        proc = subprocess.run([xray_link, "--help"], capture_output=True, text=True, env=env)
+        check("installed js-xray command runs",
+              proc.returncode == 0 and "deobfuscate and analyze JavaScript" in proc.stdout,
+              (proc.returncode, proc.stdout[:200], proc.stderr[:200]))
+        proc = subprocess.run([xq_link, "--help"], capture_output=True, text=True, env=env)
+        check("installed xq command runs",
+              proc.returncode == 0 and "Query an .xrayjs directory" in proc.stdout,
+              (proc.returncode, proc.stdout[:200], proc.stderr[:200]))
+
+        # Exercise the exact two-part one-line installer without reaching GitHub:
+        # register this checkout as a local Bun template, create with --no-install,
+        # then let setup prepare Node before it installs native dependencies.
+        create_home = os.path.join(tmp, "create-home")
+        template_dir = os.path.join(create_home, ".bun-create")
+        os.makedirs(template_dir)
+        os.symlink(ROOT, os.path.join(template_dir, "js-xray"))
+        install_dir = os.path.join(tmp, "installed-copy")
+        create_env = dict(os.environ,
+                          HOME=create_home,
+                          CODEX_HOME=os.path.join(create_home, ".codex"),
+                          JSXRAY_BIN_DIR=os.path.join(create_home, ".local", "bin"),
+                          JSXRAY_NODE=node)
+        proc = subprocess.run(
+            [bun, "create", "js-xray", install_dir, "--no-install", "--no-git"],
+            capture_output=True, text=True, env=create_env)
+        check("bun create --no-install copies the package",
+              proc.returncode == 0 and os.path.isfile(os.path.join(install_dir, "scripts", "setup.mjs")),
+              (proc.returncode, proc.stdout[-300:], proc.stderr[-300:]))
+        proc = subprocess.run(
+            [bun, "run", "--cwd", install_dir, "setup"],
+            capture_output=True, text=True, env=create_env)
+        created_xq = os.path.join(create_home, ".local", "bin", "xq")
+        created_xray = os.path.join(create_home, ".local", "bin", "js-xray")
+        created_skill = os.path.join(create_home, ".codex", "skills", "js-xray")
+        check("the complete one-line install succeeds", proc.returncode == 0,
+              (proc.returncode, proc.stdout[-500:], proc.stderr[-500:]))
+        check("one-line xq points into the installed copy",
+              os.path.realpath(created_xq)
+              == os.path.realpath(os.path.join(install_dir, "skill", "scripts", "xq.py")),
+              os.path.realpath(created_xq) if os.path.lexists(created_xq) else "missing")
+        check("one-line js-xray points into the installed copy",
+              os.path.realpath(created_xray)
+              == os.path.realpath(os.path.join(install_dir, "skill", "scripts", "xray.py")),
+              os.path.realpath(created_xray) if os.path.lexists(created_xray) else "missing")
+        check("one-line Codex skill points into the installed copy",
+              os.path.realpath(created_skill)
+              == os.path.realpath(os.path.join(install_dir, "skill")),
+              os.path.realpath(created_skill) if os.path.lexists(created_skill) else "missing")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -3209,6 +3332,7 @@ def main():
     test_xq_resolves_its_target()
     test_xq_reads_toon_and_json_identically()
     test_install_xq_script()
+    test_one_command_setup()
     print("")
     print("passed %d, failed %d" % (len(PASS), len(FAIL)))
     for name, detail in FAIL:

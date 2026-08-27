@@ -11,7 +11,9 @@
     "webcrack": "webcrack",
     "xray": "python3 skill/scripts/xray.py",
     "xq": "python3 skill/scripts/xq.py",
-    "install-xq": "sh scripts/install-xq.sh"
+    "install-xq": "sh scripts/install-xq.sh",
+    "setup": "bun run scripts/setup.mjs",
+    "setup:dry-run": "bun run scripts/setup.mjs --dry-run"
   },
   "dependencies": {
     "webcrack": "2.16.0"

@@ -1,0 +1,5 @@
+[install]
+# isolated-vm ships pinned Node 22/24 prebuilds. Running its lifecycle script
+# under whatever node happens to be on PATH can trigger an incompatible
+# Node 25/26 source build before js-xray's setup has prepared Node 24.
+ignoreScripts = true

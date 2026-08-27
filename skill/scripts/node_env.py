@@ -34,6 +34,13 @@ def candidates():
         yield env_node
     # 2. version managers, newest first
     homedir = os.path.expanduser("~")
+    repo_root = os.path.abspath(os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", ".."))
+    portable_root = os.path.join(repo_root, ".runtime")
+    if os.path.isdir(portable_root):
+        for name in sorted(os.listdir(portable_root), reverse=True):
+            cand = os.path.join(portable_root, name, "bin", "node")
+            if os.path.isfile(cand):
+                yield cand
     roots = [
         os.path.join(os.environ.get("FNM_DIR", os.path.join(homedir, ".local/share/fnm")), "node-versions"),
         os.path.join(homedir, "Library/Application Support/fnm/node-versions"),
