@@ -852,7 +852,12 @@ def cmd_port(run, args):
         algos = [a for a in algos
                  if low in (a.get("function") or "").lower()
                  or a.get("id") == args.name
-                 or any(low in f.lower() for f in a.get("families") or [])]
+                 or any(low in f.lower() for f in a.get("families") or [])
+                 # A lead is searchable by the family it points at: a reader who
+                 # asks "port SHA" about a file with an unconfirmed H0 hit needs
+                 # the answer "it is not SHA-256, and here is why", not silence.
+                 or any(low in (l.get("family") or "").lower()
+                        for l in a.get("constant_leads") or [])]
 
     # report.py owns the family -> snippet mapping. Importing it keeps xq and
     # report.md from giving two different answers for one algorithm; a copy here
@@ -888,7 +893,12 @@ def cmd_port(run, args):
     for algo in algos:
         out.append("%s  %s  %s" % (algo.get("id"), algo.get("function"),
                                    loc(algo.get("lines"))))
-        out.append("  families:  %s" % (", ".join(algo.get("families") or []) or "-"))
+        out.append("  families:  %s" % (", ".join(algo.get("families") or [])
+                                        or "- (none confirmed)"))
+        for lead in algo.get("constant_leads") or []:
+            out.append("  lead:      %s -- not confirmed: %s" % (
+                "; ".join(lead.get("evidence") or []),
+                lead.get("why_not_confirmed") or ""))
         if algo.get("constants"):
             out.append("  constants: %s" % ", ".join(str(c) for c in algo["constants"]))
         if algo.get("operators"):
@@ -914,6 +924,10 @@ def cmd_port(run, args):
             out.append("  %s in Python:" % snippet["family"])
             for line in snippet["python"].splitlines():
                 out.append("    " + line)
+        if (algo.get("constant_leads") or []) and not (algo.get("families") or []):
+            out.append("  (no snippet: the constant above is a lead, not an "
+                       "identification, so any drop-in replacement would be wrong "
+                       "on every input -- read the loop in clean.js)")
         if algo.get("multiply_style") == "mixed":
             out.append("  (no snippet: this function mixes multiply styles, so it "
                        "has to be read directly)")

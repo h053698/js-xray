@@ -407,10 +407,27 @@ def render(data, args):
         L.append("### Algorithms")
         L.append("")
         for algo in porting["algorithms"]:
+            leads = algo.get("constant_leads") or []
+            # No confirmed family: the heading says what the function is instead
+            # of naming an algorithm it was not shown to be. The 32-bit notes
+            # below still apply -- the multiply style and the character unit are
+            # properties of this code, not of a family label.
             L.append("**%s** at lines %s-%s: %s" % (
                 algo["function"], algo["lines"][0], algo["lines"][1],
-                ", ".join(algo["families"])))
+                ", ".join(algo["families"]) if algo["families"]
+                else "unidentified bit-mixing routine"))
             L.append("")
+            for lead in leads:
+                L.append("Constant lead, not an identification: %s. %s." % (
+                    "; ".join(lead.get("evidence") or []),
+                    lead.get("why_not_confirmed") or "not confirmed"))
+                L.append("")
+            if leads and not algo["families"]:
+                L.append("No drop-in snippet is given: naming a family here would "
+                         "hand over a replacement that is wrong on every input. "
+                         "Read the loop in " + BT + "clean.js" + BT + " and use the "
+                         "32-bit notes below.")
+                L.append("")
             if algo.get("multiply_style"):
                 L.append("32-bit multiply style: **%s** - %s" % (
                     algo["multiply_style"], algo.get("multiply_note") or ""))

@@ -229,10 +229,32 @@ collapsed into another flow carry `shares_flow_with`.
 
 Everything needed is under `porting`:
 
-- `algorithms[]` - the recognised family, its constants, the line range, and
-  `multiply_style` with a `multiply_note` explaining how to reproduce it.
-  `char_source` and `char_source_note` say what one iteration of the loop
-  consumes; `null` means the facts did not decide it, not that it is bytes.
+- `algorithms[]` - one entry per function that contains a known magic constant,
+  with its constants, line range, and `multiply_style` plus `multiply_note`
+  explaining how to reproduce it. `char_source` and `char_source_note` say what
+  one iteration of the loop consumes; `null` means the facts did not decide it,
+  not that it is bytes.
+
+  The identification is split in two, and the difference matters:
+
+  - `families[]` is what the evidence **confirmed**. A name appears here only
+    when it could not plausibly be a coincidence -- both registered constants of
+    the family, or the one constant it is known by plus the loop and operators an
+    implementation of it must have. These are the only names a Python snippet is
+    ever attached to, in `report.md` and in `xq port`.
+  - `constant_leads[]` is what **matched but was not confirmed**, shaped like
+    `roles[]`: `{family, confidence, constant_roles[], evidence[],
+    why_not_confirmed}`. A lead means the function contains a number published as
+    part of that algorithm and nothing else agreed.
+
+  An empty `families[]` next to a lead is a real answer, not a gap: custom hash
+  code seeds itself from the same pool of plausible-looking 32-bit values the
+  standard algorithms drew from -- `0x6a09e667` is the fractional part of
+  sqrt(2) as well as SHA-256's H0 -- so one hit does not identify anything.
+  Naming a family on it would hand over `hashlib.sha256` for an algorithm that
+  is not SHA-256, wrong on every input and hard to doubt. Read the loop in
+  `clean.js`; the 32-bit multiply style and character unit reported alongside
+  are still findings about this code and still apply.
 - `network_contracts[]` - url, method, headers, body shape, credentials mode.
   A hoisted endpoint constant is followed back to its literal, so `url` is the
   address; when that required a lookup the original call-site expression is
@@ -466,7 +488,13 @@ module           {exports[], imports[], global_assignments[]}
 literals         {urls[]{url, line}, paths[]}
 porting          {algorithms[], network_contracts[], inputs[], pitfalls[]}
   algorithms[]   {function, id, lines[2], families[], constants[], operators[],
-                  returns[], loops, multiply_style, multiply_note}
+                  returns[], loops, multiply_style, multiply_note,
+                  char_source, char_source_note,
+                  constant_leads[]{family, confidence, constant_roles[],
+                                   evidence[], why_not_confirmed}}
+                 -- families[] is confirmed and carries the snippet;
+                 constant_leads[] is a constant that matched without enough
+                 corroboration to name the algorithm, and gets no snippet
   network_...[]  {kind, url, url_expression?, method, headers[], body,
                   credentials, function, id, line}
   inputs[]       {property, read_by[]}

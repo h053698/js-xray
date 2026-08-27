@@ -86,6 +86,161 @@ def vm_note(vm_signals):
 # and it is also the number one source of porting bugs in other languages.
 BITWISE = {"^", "&", "|", "<<", ">>", ">>>", "^=", "&=", "|=", "<<=", ">>=", ">>>="}
 
+# ---- constant hit -> named family: identification vs. lead ----
+#
+# structure.mjs records every numeric literal that equals a known magic constant.
+# That is a fact about the literal, and it is not by itself a fact about the
+# algorithm. Custom hash code picks its seeds from the same small pool of
+# "random-looking" 32-bit values that the standard algorithms did -- 0x6a09e667
+# is the fractional part of sqrt(2), so a hand-written mixer that wants a
+# plausible seed lands on it without being SHA-256 at all.
+#
+# Naming a family on one such hit is the worst available outcome: it is wrong on
+# every input, and because a family name pulls a drop-in snippet along with it,
+# the reader is handed `hashlib.sha256` for an algorithm that is not SHA-256.
+# report.py already refuses to guess a snippet when the multiply style is unclear
+# ("a wrong snippet is worse than none, because it looks authoritative and fails
+# only on longer inputs"); the same standard is applied here to the family name
+# that selects the snippet.
+#
+# So a family is *confirmed* only when the evidence could not plausibly be a
+# coincidence, and otherwise the hit is published as a *lead*: the constant, what
+# it is known as, and why that was not enough.
+#
+# min_constants -- how many distinct registered constants of the family must
+#   appear. For a family whose identity rests on a pair, the pair is the
+#   threshold: two independent 32-bit coincidences in one function is not a
+#   thing that happens, while one is exactly what a borrowed seed looks like.
+#   Note the pair is a floor, not a full fingerprint: a real SHA-256 carries
+#   H0..H7 and 64 round constants, so requiring 2 of the 2 this pipeline knows
+#   about stays reachable for a partially-inlined implementation.
+# needs -- structural corroboration for a family this pipeline knows by a single
+#   constant, where "count the constants" has nothing to count. Each entry is a
+#   predicate over the recorded facts.
+#
+# Keys must stay in step with ALGO_CONSTANTS in structure.mjs; a family that
+# appears there and not here would silently fall through to lead-only, so the
+# test suite asserts the two sets match.
+FAMILY_EVIDENCE = {
+    # basis and prime: FNV-1a is those two numbers, and nothing else is.
+    "FNV-1a 32-bit": {"min_constants": 2, "known_constants": 2},
+    # the two fmix32 multipliers, which appear together or not at all.
+    "murmur3 fmix32": {"min_constants": 2, "known_constants": 2},
+    # init A and init B. A real MD5 also carries C, D and the 64-entry T table,
+    # which this pipeline does not register, so two init words is the floor.
+    "MD5": {"min_constants": 2, "known_constants": 2},
+    # H0 and H1. H0 alone is the false positive this threshold exists for.
+    "SHA-256": {"min_constants": 2, "known_constants": 2},
+    # multiplier and increment: the parameters *are* the generator.
+    "LCG": {"min_constants": 2, "known_constants": 2},
+    # 0xEDB88320 is the bit-reversed CRC-32 polynomial and has no other use, so
+    # one hit is strong -- but a bare mention in a constants module is not an
+    # implementation. The xor-and-shift loop that consumes it is required.
+    "CRC-32": {"min_constants": 1, "known_constants": 1,
+               "needs": ("xor", "shift_or_loop")},
+    # 5381 is small enough to be an arbitrary seed, an id base or a port number,
+    # so it carries the least weight of any constant here. djb2's actual shape --
+    # a loop that multiplies by 33, spelled either `* 33` or `(h << 5) + h` --
+    # has to be present.
+    "djb2": {"min_constants": 1, "known_constants": 1,
+             "needs": ("loop", "shift_or_multiply")},
+}
+
+
+def _family_hits(algos):
+    """Group recorded constant hits by family.
+
+    structure.mjs writes them as "SHA-256 (H0)". Returns
+    {family: [role, ...]} with the roles deduplicated and sorted, so a constant
+    counted twice in one function does not read as two independent constants.
+    """
+    hits = {}
+    for tag in algos or []:
+        family, _, rest = tag.partition(" (")
+        role = rest[:-1] if rest.endswith(")") else rest
+        hits.setdefault(family, set()).add(role or "unnamed")
+    return {f: sorted(rs) for f, rs in hits.items()}
+
+
+def _corroboration(fn, by_id=None):
+    """Which structural signals a function shows, for the `needs` predicates."""
+    ops = set(fn.get("operators", []) or [])
+    loops = (fn.get("control", {}) or {}).get("loops", 0) or 0
+    arith = fn.get("arith") or {}
+    multiplies = (arith.get("imul_calls", 0) or 0) + (arith.get("truncated_multiplies", 0) or 0)
+    shifts = bool(ops & {"<<", ">>", ">>>", "<<=", ">>=", ">>>="})
+    return {
+        "xor": bool(ops & {"^", "^="}),
+        "loop": bool(loops),
+        "shift_or_loop": shifts or bool(loops),
+        "shift_or_multiply": shifts or bool(multiplies),
+    }
+
+
+def identify_families(fn, by_id=None):
+    """Split a function's constant hits into confirmed families and leads.
+
+    Returns (families, leads). `families` is the sorted list of names the
+    evidence supports naming outright -- the only ones downstream may attach a
+    snippet to. `leads` mirrors the {role, confidence, evidence[]} shape used by
+    classify(), because a lead is the same kind of claim: a reading of the facts
+    that the reader is expected to check, not a conclusion.
+
+    A lead is never silently dropped. Knowing that a function contains the number
+    published as SHA-256's H0 is useful when reading its loop; what is harmful is
+    only the leap from there to the name and the drop-in call.
+    """
+    hits = _family_hits(fn.get("algorithms", []) or [])
+    if not hits:
+        return [], []
+    signals = _corroboration(fn, by_id)
+    families, leads = [], []
+    for family in sorted(hits):
+        roles = hits[family]
+        policy = FAMILY_EVIDENCE.get(family)
+        found = ["%s (%s)" % (family, r) for r in roles]
+        if policy is None:
+            # An unregistered family: report the hit, do not name it. Reaching
+            # here means ALGO_CONSTANTS gained an entry without a threshold.
+            leads.append({
+                "family": family, "confidence": "low",
+                "constant_roles": roles,
+                "evidence": ["matches %s" % ", ".join(found)],
+                "why_not_confirmed": "no evidence threshold is defined for this "
+                                     "family, so the match is reported unnamed",
+            })
+            continue
+        need = policy["min_constants"]
+        known = policy["known_constants"]
+        missing_signals = [s for s in policy.get("needs", ()) if not signals[s]]
+        if len(roles) >= need and not missing_signals:
+            families.append(family)
+            continue
+        why = []
+        if len(roles) < need:
+            why.append("%d of the %d %s constants this pipeline knows are present, "
+                       "and %d are required: a lone 32-bit constant is as likely to "
+                       "be a borrowed seed as an implementation"
+                       % (len(roles), known, family, need))
+        if missing_signals:
+            why.append("the structure a %s implementation would show is missing (%s)"
+                       % (family, ", ".join(MISSING_SIGNAL_NOTE[s] for s in missing_signals)))
+        leads.append({
+            "family": family, "confidence": "low",
+            "constant_roles": roles,
+            "evidence": ["matches %s" % ", ".join(found)],
+            "why_not_confirmed": "; ".join(why),
+        })
+    return families, leads
+
+
+MISSING_SIGNAL_NOTE = {
+    "xor": "no xor operator",
+    "loop": "no loop",
+    "shift_or_loop": "neither a shift nor a loop",
+    "shift_or_multiply": "neither a shift nor a multiply",
+}
+
 FINGERPRINT_ROOTS = ("navigator", "screen", "performance", "document", "window", "location")
 
 # Substrings that mark a call as belonging to a capability, checked against the
@@ -391,15 +546,24 @@ def classify(fn, by_id):
         roles.append(anti)
 
     # --- named algorithm: the strongest signal available ---
-    if algos:
-        families = sorted({a.split(" (")[0] for a in algos})
+    # A constant hit alone does not name the algorithm, so the role follows the
+    # same split: confirmed families give "hash/digest", while a bare lead falls
+    # through to the bit-mixing rule below. Before this split the two rules could
+    # both fire on one file -- "SHA-256" in the porting spec next to "bit mixing
+    # (unrecognised algorithm)" in the role histogram -- which told the reader the
+    # system had both identified and failed to identify the same code.
+    families, leads = identify_families(fn, by_id)
+    if families:
         add("hash/digest", "high",
             ["magic constants match %s" % ", ".join(families)] +
             (["loop over input"] if ctrl.get("loops") else []))
+    for lead in leads:
+        add("constant lead: %s (not confirmed)" % lead["family"], lead["confidence"],
+            list(lead["evidence"]) + [lead["why_not_confirmed"]])
 
-    # --- hand-rolled bit mixing without a recognised constant ---
+    # --- hand-rolled bit mixing without a confirmed algorithm ---
     bitwise = sorted(ops & BITWISE)
-    if bitwise and not algos:
+    if bitwise and not families:
         conf = "medium" if ctrl.get("loops") else "low"
         ev = ["32-bit operators %s" % " ".join(bitwise)]
         if ctrl.get("loops"):
@@ -734,7 +898,12 @@ def trace_flow(entry_id, by_id, tables, roles_by_id):
         if fn.get("network"):
             step["network"] = fn["network"]
         if fn.get("algorithms"):
-            step["algorithms"] = sorted({a.split(" (")[0] for a in fn["algorithms"]})
+            # Confirmed families only. A flow step is a one-line label a reader
+            # skims, with no room for the qualification a lead needs, so naming an
+            # unconfirmed family here would be read as a finding.
+            named, _ = identify_families(fn, by_id)
+            if named:
+                step["algorithms"] = named
         steps.append(step)
         if depth >= MAX_FLOW_DEPTH:
             return
@@ -869,11 +1038,18 @@ def porting_spec(structure, by_id, roles_by_id):
         if fn.get("algorithms"):
             arith = rollup_arith(fn, by_id)
             char_source = rollup_char_source(fn, by_id)
+            # families: what the evidence supports naming, and the only thing
+            # report.py and xq may hang a drop-in snippet on.
+            # constant_leads: the hits that did not clear the bar, kept because a
+            # known constant is worth reading the loop for even when it does not
+            # identify the algorithm.
+            families, leads = identify_families(fn, by_id)
             spec["algorithms"].append({
                 "function": display_name(fn, by_id),
                 "id": fn["id"],
                 "lines": [fn.get("start_line"), fn.get("end_line")],
-                "families": sorted({a.split(" (")[0] for a in fn["algorithms"]}),
+                "families": families,
+                "constant_leads": leads,
                 "constants": fn.get("numbers", []),
                 "operators": fn.get("operators", []),
                 "returns": fn.get("returns", []),

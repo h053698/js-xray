@@ -2,6 +2,7 @@
 """Test suite for js-xray. Run: python3 tests/test_xray.py"""
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -2946,6 +2947,219 @@ def test_xq_reads_toon_and_json_identically():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+FIXTURES = os.path.join(ROOT, "tests", "fixtures")
+
+
+def _explain_file(js_path, prefix="jx_fam_"):
+    """Run structure.mjs + explain on one file and return the explanation."""
+    node, _ver = node_env.resolve()
+    if not node:
+        return None
+    outdir = tempfile.mkdtemp(prefix=prefix)
+    try:
+        struct_path = os.path.join(outdir, "structure.json")
+        subprocess.run([node, os.path.join(SCRIPTS, "structure.mjs"), js_path, struct_path],
+                       capture_output=True)
+        return explain.explain(json.load(open(struct_path)))
+    finally:
+        shutil.rmtree(outdir, ignore_errors=True)
+
+
+def test_family_needs_more_than_one_constant():
+    """A single magic constant is a lead, not an identification.
+
+    The fixture is a bespoke signer whose second state variable is seeded with
+    0x6a09e667. That number is the fractional part of sqrt(2) and is published as
+    SHA-256's H0, so a one-constant rule called this function SHA-256 and handed
+    the reader hashlib.sha256 -- an answer that is wrong on every input, and wrong
+    in the most expensive way, because it looks authoritative and fails only once
+    the reader has trusted it.
+    """
+    print("family identification requires evidence")
+    data = _explain_file(os.path.join(FIXTURES, "custom_sign.js"))
+    if data is None:
+        check("node available for family identification test", False, "no node found")
+        return
+
+    algos = data["porting"]["algorithms"]
+    check("the custom signer is still reported as an algorithm site",
+          len(algos) == 1, [a["function"] for a in algos])
+    if not algos:
+        return
+    algo = algos[0]
+
+    check("a lone H0 hit does not name SHA-256",
+          algo["families"] == [], algo["families"])
+    leads = {l["family"]: l for l in algo.get("constant_leads") or []}
+    check("the H0 hit is kept as a lead rather than dropped",
+          "SHA-256" in leads, list(leads))
+    if "SHA-256" in leads:
+        lead = leads["SHA-256"]
+        check("the lead names the constant it matched",
+              any("H0" in e for e in lead["evidence"]), lead["evidence"])
+        check("the lead says why it was not confirmed",
+              bool(lead.get("why_not_confirmed")), lead)
+
+    # No confirmed family means no snippet, which is the point: hashlib.sha256 is
+    # the wrong answer here and a reader cannot tell that by reading it.
+    check("no family is left that could carry a snippet",
+          not [f for f in algo["families"]
+               if report.port_snippet(f, algo.get("multiply_style"),
+                                      algo.get("char_source"))], algo["families"])
+
+    # The 32-bit findings are properties of this code rather than of a family
+    # label, so withholding the name must not take them away -- they are what a
+    # reader actually ports with.
+    # "mixed" is the right answer for this fixture -- it uses Math.imul and
+    # x * k >>> 0 in the same loop -- and it is reported rather than collapsed
+    # into whichever style appeared first.
+    check("the multiply style survives the withheld family",
+          algo["multiply_style"] == "mixed", algo["multiply_style"])
+    check("the character unit survives the withheld family",
+          algo.get("char_source") == "utf16-code-units", algo.get("char_source"))
+
+    # The contradiction this fixes: the pipeline used to claim SHA-256 in the
+    # porting spec while the same run's role histogram said the algorithm was
+    # unrecognised. Both statements cannot be useful, and one of them was false.
+    roles = data["summary"]["roles"]
+    check("no function claims hash/digest on a lead alone",
+          not roles.get("hash/digest"), roles)
+    check("the histogram records the lead instead",
+          any(r.startswith("constant lead") for r in roles), list(roles))
+
+
+def test_report_and_xq_withhold_the_snippet():
+    """The rendered outputs must not print a family they did not confirm."""
+    print("unconfirmed families are rendered as leads")
+    node, _ver = node_env.resolve()
+    if not node:
+        check("node available for lead rendering test", False, "no node found")
+        return
+    outdir = tempfile.mkdtemp(prefix="jx_lead_")
+    try:
+        proc = subprocess.run(
+            [sys.executable, os.path.join(SCRIPTS, "xray.py"),
+             os.path.join(FIXTURES, "custom_sign.js"), "-o", outdir],
+            capture_output=True, text=True)
+        check("the pipeline ran on the custom signer", proc.returncode == 0,
+              proc.stderr[-300:])
+        md = open(os.path.join(outdir, "report.md")).read()
+        check("report.md offers no drop-in replacement",
+              "hashlib.sha256" not in md, "snippet present")
+        check("report.md calls the constant a lead",
+              "Constant lead, not an identification" in md and "SHA-256" in md)
+        check("report.md says why no snippet is given",
+              "No drop-in snippet is given" in md)
+        check("report.md still gives the 32-bit multiply note",
+              "32-bit multiply style" in md)
+
+        out = run_xq(outdir, "port").stdout
+        check("xq port reports no confirmed family",
+              "none confirmed" in out, out[:200])
+        check("xq port shows the lead", "lead:" in out, out[:200])
+        check("xq port offers no drop-in replacement",
+              "hashlib.sha256" not in out, out[:300])
+        # A reader who asks about SHA gets the refutation, not an empty result.
+        named = run_xq(outdir, "port", "SHA").stdout
+        check("a query for the lead's family finds the entry",
+              "not confirmed" in named, named[:200])
+    finally:
+        shutil.rmtree(outdir, ignore_errors=True)
+
+
+def test_real_families_still_identified():
+    """The stricter rule must not silence the algorithms that are really there.
+
+    Trading a loud wrong answer for a quiet missing one is not an improvement, so
+    each family is checked against an actual implementation of it.
+    """
+    print("known families still confirmed")
+    data = _explain_file(os.path.join(FIXTURES, "known_families.js"))
+    if data is None:
+        check("node available for known-family test", False, "no node found")
+        return
+
+    confirmed, leads = {}, {}
+    for algo in data["porting"]["algorithms"]:
+        confirmed[algo["function"]] = algo["families"]
+        leads[algo["function"]] = [l["family"] for l in algo.get("constant_leads") or []]
+
+    for fname, family in (("md5Init", "MD5"), ("djb2", "djb2"),
+                          ("lcg", "LCG"), ("sha256ish", "SHA-256")):
+        check("%s is still identified as %s" % (fname, family),
+              family in confirmed.get(fname, []), confirmed.get(fname))
+
+    # Same file, same constant, different evidence: H0 alongside H1 is SHA-256,
+    # H0 on its own is not. This pair is the whole rule in one assertion.
+    check("a seed-only H0 in the same file stays a lead",
+          confirmed.get("seedOnly") == [] and leads.get("seedOnly") == ["SHA-256"],
+          (confirmed.get("seedOnly"), leads.get("seedOnly")))
+
+    # CRC-32 and djb2 are known by one constant each, so counting cannot decide
+    # them and structure has to. Checked directly, because a constant-folded
+    # polynomial can keep the fixture from reaching the rule at all.
+    crc = {"algorithms": ["CRC-32 (reversed polynomial)"],
+           "operators": ["^", ">>>"], "control": {"loops": 2}}
+    check("CRC-32 with its xor-and-shift loop is confirmed",
+          explain.identify_families(crc)[0] == ["CRC-32"])
+    bare = {"algorithms": ["CRC-32 (reversed polynomial)"],
+            "operators": [], "control": {"loops": 0}}
+    check("the CRC-32 polynomial alone is only a lead",
+          explain.identify_families(bare)[0] == [])
+    seed = {"algorithms": ["djb2 (seed)"], "operators": [], "control": {"loops": 0}}
+    check("5381 without a loop is only a lead",
+          explain.identify_families(seed)[0] == [])
+
+
+def test_sentinel_sdk_families_unchanged():
+    """The published sample must keep both families and both snippets."""
+    print("sentinel_sdk true positives")
+    canon = json.load(open(os.path.join(SAMPLE_XRAYJS, "xray.json")))
+    algos = canon["porting"]["algorithms"]
+    check("the sample still reports one algorithm site", len(algos) == 1, len(algos))
+    if not algos:
+        return
+    algo = algos[0]
+    check("FNV-1a and murmur3 are both still confirmed",
+          algo["families"] == ["FNV-1a 32-bit", "murmur3 fmix32"], algo["families"])
+    check("the sample carries no unconfirmed leads",
+          not algo.get("constant_leads"), algo.get("constant_leads"))
+    for family in algo["families"]:
+        check("%s still gets a snippet" % family,
+              report.port_snippet(family, algo["multiply_style"],
+                                  algo.get("char_source")) is not None, family)
+
+
+def test_family_thresholds_cover_every_constant():
+    """Every family in ALGO_CONSTANTS needs a threshold in FAMILY_EVIDENCE.
+
+    A family registered in structure.mjs without an entry here falls through to
+    lead-only and is never named again -- a silent regression no other test would
+    catch, because a missing name looks like ordinary caution.
+    """
+    print("threshold table covers the constant table")
+    src = open(os.path.join(SCRIPTS, "structure.mjs")).read()
+    block = src.split("const ALGO_CONSTANTS = [", 1)[1].split("];", 1)[0]
+    found = re.findall(r'algo:\s*"([^"]+)"', block)
+    registered = set(found)
+    check("the constant table was parsed", len(registered) >= 6, registered)
+    check("every registered family has an evidence threshold",
+          registered <= set(explain.FAMILY_EVIDENCE),
+          registered - set(explain.FAMILY_EVIDENCE))
+    check("no threshold is defined for an unregistered family",
+          set(explain.FAMILY_EVIDENCE) <= registered,
+          set(explain.FAMILY_EVIDENCE) - registered)
+
+    # A threshold can never exceed the constants this pipeline can observe, or the
+    # family becomes unreachable -- and unreachable is indistinguishable from
+    # removed, which is not what a threshold is for.
+    for family, policy in explain.FAMILY_EVIDENCE.items():
+        known = found.count(family)
+        check("the %s threshold is reachable" % family,
+              policy["min_constants"] <= known and policy["known_constants"] == known,
+              (family, policy, known))
+
+
 def main():
     test_brace_matching()
     test_keyword_not_function()
@@ -2970,6 +3184,11 @@ def main():
     test_graceful_on_plain_file()
     test_multiply_style()
     test_astral_char_encoding()
+    test_family_needs_more_than_one_constant()
+    test_report_and_xq_withhold_the_snippet()
+    test_real_families_still_identified()
+    test_sentinel_sdk_families_unchanged()
+    test_family_thresholds_cover_every_constant()
     test_endpoint_and_storage_recovery()
     test_reachability_ignores_flow_budget()
     test_pipeline_log_records_failure()
