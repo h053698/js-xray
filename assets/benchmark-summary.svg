@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="675" viewBox="0 0 1200 675" role="img" aria-labelledby="title desc">
+  <title id="title">js-xray benchmark summary</title>
+  <desc id="desc">Three-arm benchmark. Raw JavaScript took 16 minutes 5 seconds, 8.92 million tokens, and 18 dollars 18 cents. js-xray plus xq took 6 minutes 50 seconds, 2.27 million tokens, and 4 dollars 70 cents. Adding the skill took 5 minutes 56 seconds, 2.48 million tokens, and 5 dollars 10 cents. All arms passed 13 of 13 correctness tests.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0b1220"/>
+      <stop offset="1" stop-color="#111c32"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#000" flood-opacity="0.28"/>
+    </filter>
+  </defs>
+  <rect width="1200" height="675" fill="url(#bg)"/>
+
+  <text x="72" y="76" fill="#f8fafc" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="34" font-weight="700">Reverse-engineering benchmark</text>
+  <text x="72" y="111" fill="#94a3b8" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="18">Same obfuscated JavaScript · same Claude Sonnet 5 task · Python port · 13/13 correct in every arm</text>
+
+  <g filter="url(#shadow)">
+    <rect x="72" y="155" width="320" height="356" rx="18" fill="#172033" stroke="#334155"/>
+    <rect x="440" y="155" width="320" height="356" rx="18" fill="#102a2b" stroke="#20b486" stroke-width="2"/>
+    <rect x="808" y="155" width="320" height="356" rx="18" fill="#17253a" stroke="#60a5fa" stroke-width="2"/>
+  </g>
+
+  <text x="100" y="200" fill="#cbd5e1" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="16" font-weight="700">A · RAW JAVASCRIPT</text>
+  <text x="468" y="200" fill="#6ee7b7" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="16" font-weight="700">B · JS-XRAY + XQ</text>
+  <text x="836" y="200" fill="#93c5fd" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="16" font-weight="700">C · JS-XRAY + XQ + SKILL</text>
+
+  <text x="100" y="254" fill="#94a3b8" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="15">Completion time</text>
+  <text x="100" y="293" fill="#f8fafc" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="34" font-weight="700">16m 05s</text>
+  <text x="468" y="254" fill="#94a3b8" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="15">Completion time</text>
+  <text x="468" y="293" fill="#f8fafc" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="34" font-weight="700">6m 50s</text>
+  <text x="836" y="254" fill="#94a3b8" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="15">Completion time · fastest</text>
+  <text x="836" y="293" fill="#f8fafc" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="34" font-weight="700">5m 56s</text>
+  <text x="836" y="321" fill="#60a5fa" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="17" font-weight="700">63.1% less · 2.71× faster</text>
+
+  <line x1="100" y1="345" x2="364" y2="345" stroke="#334155"/>
+  <line x1="468" y1="345" x2="732" y2="345" stroke="#244e49"/>
+  <line x1="836" y1="345" x2="1100" y2="345" stroke="#2c4567"/>
+
+  <text x="100" y="384" fill="#94a3b8" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="15">Total tokens</text>
+  <text x="100" y="413" fill="#e2e8f0" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="25" font-weight="700">8.92M</text>
+  <text x="468" y="384" fill="#94a3b8" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="15">Total tokens · lowest</text>
+  <text x="468" y="413" fill="#e2e8f0" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="25" font-weight="700">2.27M</text>
+  <text x="468" y="439" fill="#34d399" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="16" font-weight="700">74.5% fewer</text>
+  <text x="836" y="384" fill="#94a3b8" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="15">Total tokens</text>
+  <text x="836" y="413" fill="#e2e8f0" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="25" font-weight="700">2.48M</text>
+  <text x="836" y="439" fill="#60a5fa" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="16" font-weight="700">72.2% fewer</text>
+
+  <text x="100" y="472" fill="#94a3b8" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="15">Estimated API cost</text>
+  <text x="100" y="499" fill="#e2e8f0" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="23" font-weight="700">$18.18</text>
+  <text x="468" y="472" fill="#94a3b8" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="15">Estimated API cost · lowest</text>
+  <text x="468" y="499" fill="#e2e8f0" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="23" font-weight="700">$4.70</text>
+  <text x="836" y="472" fill="#94a3b8" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="15">Estimated API cost</text>
+  <text x="836" y="499" fill="#e2e8f0" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="23" font-weight="700">$5.10</text>
+
+  <rect x="72" y="550" width="1056" height="66" rx="12" fill="#0f172a" stroke="#27364c"/>
+  <circle cx="105" cy="583" r="8" fill="#60a5fa"/>
+  <text x="126" y="578" fill="#f8fafc" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="17" font-weight="700">Fastest: skill-loaded C</text>
+  <text x="126" y="601" fill="#94a3b8" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="14">13.2% faster than B, while remaining 71.9% cheaper than raw</text>
+  <circle cx="610" cy="583" r="8" fill="#34d399"/>
+  <text x="631" y="578" fill="#f8fafc" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="17" font-weight="700">Lowest cost: artifact-only B</text>
+  <text x="631" y="601" fill="#94a3b8" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="14">$4.70 versus $18.18 raw · same 13/13 correctness</text>
+
+  <text x="72" y="648" fill="#64748b" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="13">Synthetic 28 KB RC4/control-flow/self-defending sample · Python reimplementation of a custom 32-bit signer</text>
+</svg>

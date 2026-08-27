@@ -35,6 +35,8 @@ The benchmark compares investigation methods, not different models or prompts:
 
 **Bottom line:** loading the full skill produced the fastest completed port—**5m 56s instead of 16m 5s**—while still cutting total token use by **72.2%** and estimated API cost by **71.9%**. The lean B configuration used the fewest tokens and lowest cost. Compared with B, the skill added about **9.0% tokens / 8.7% cost** but finished **13.2% faster**.
 
+![js-xray benchmark: raw JavaScript versus xq and skill-assisted analysis](assets/benchmark-summary.svg)
+
 The cost calculation uses the Claude Sonnet 5 rates applied for this benchmark: $2/MTok input and $10/MTok output. See [BENCHMARK.md](BENCHMARK.md) for the complete setup and token-accounting method. See [BENCHMARK.drawio](BENCHMARK.drawio) for an editable pipeline and benchmark diagram.
 
 > This is one controlled benchmark. Absolute results vary with file complexity, model, caching, and the tool environment.
