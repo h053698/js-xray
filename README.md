@@ -10,6 +10,15 @@ It combines WebCrack with conservative Babel AST passes to resolve string arrays
 
 We benchmarked the same Python porting task with Claude Sonnet 5 on the same obfuscated JavaScript file.
 
+### What was analyzed
+
+- **Input:** a synthetic 28 KB JavaScript file compressed into one line and heavily obfuscated with an RC4-encoded string array, control-flow flattening, and self-defending code.
+- **Hidden behavior:** a bespoke, non-standard `sign(input, salt)` function that combines two 32-bit state variables, UTF-16 `charCodeAt` input, salt mixing, XOR/shift operations, and both `Math.imul` and ordinary JavaScript multiplication before returning an eight-character lowercase hexadecimal signature.
+- **Agent task:** reverse engineer that behavior, explain the state and loop structure, and implement equivalent local Python functions `sign(input, salt)` and `digest(input)` without calling the original JavaScript at runtime.
+- **Correctness check:** compare the Python output with the original JavaScript on 13 cases covering empty input, ASCII, Korean text, emoji, surrogate boundaries, U+10FFFF, and a 200-character input. Both arms passed all 13 cases.
+
+The benchmark compares investigation methods, not different models or prompts: the raw arm received only the obfuscated file, while the js-xray arm received the same file plus its precomputed `.xrayjs` artifacts and permission to query them with `xq`.
+
 | Metric | Raw JavaScript only | js-xray + xq | Improvement |
 | --- | ---: | ---: | ---: |
 | Correctness | 13/13 | 13/13 | Same |
